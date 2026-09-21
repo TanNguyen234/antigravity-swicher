@@ -393,9 +393,9 @@ class LiveQuotaFetcher {
         const planInfo = planStatus.planInfo || {};
         const models = (userStatus.clientModelConfigs && userStatus.clientModelConfigs.models) || [];
 
-        let fiveHourFraction = 1.0;
-        let weeklyFraction = 1.0;
-        let claudeFraction = 1.0;
+        let fiveHourFraction = null;
+        let weeklyFraction = null;
+        let claudeFraction = null;
         let fiveHourResetTime = null;
         let weeklyResetTime = null;
         let claudeResetTime = null;
@@ -428,21 +428,27 @@ class LiveQuotaFetcher {
           }
         } else {
           const flashModel = models.find(m => m.label && m.label.includes('Flash'));
-          if (flashModel && flashModel.quotaInfo) {
+          if (flashModel && flashModel.quotaInfo && typeof flashModel.quotaInfo.remainingFraction === 'number') {
             fiveHourFraction = flashModel.quotaInfo.remainingFraction;
             fiveHourResetTime = flashModel.quotaInfo.resetTime;
           }
 
           const claudeModel = models.find(m => m.label && m.label.includes('Claude'));
-          if (claudeModel && claudeModel.quotaInfo) {
+          if (claudeModel && claudeModel.quotaInfo && typeof claudeModel.quotaInfo.remainingFraction === 'number') {
             claudeFraction = claudeModel.quotaInfo.remainingFraction;
             claudeResetTime = claudeModel.quotaInfo.resetTime;
           }
         }
 
-        const fiveHourQuota = Math.round(fiveHourFraction * 100);
-        const weeklyQuota = Math.round(weeklyFraction * 100);
-        const claudeQuota = Math.round(claudeFraction * 100);
+        const fiveHourQuota = Number.isFinite(fiveHourFraction)
+          ? Math.round(fiveHourFraction * 100)
+          : null;
+        const weeklyQuota = Number.isFinite(weeklyFraction)
+          ? Math.round(weeklyFraction * 100)
+          : null;
+        const claudeQuota = Number.isFinite(claudeFraction)
+          ? Math.round(claudeFraction * 100)
+          : null;
 
         return {
           isLive: true,
@@ -459,7 +465,7 @@ class LiveQuotaFetcher {
           fiveHourDescription: fiveHourDescription,
           weeklyDescription: weeklyDescription,
           flashQuota: fiveHourQuota,
-          proQuota: fiveHourQuota,
+          proQuota: weeklyQuota,
           claudeQuota: claudeQuota,
           resetTime: fiveHourResetTime,
           modelDetails: [
@@ -480,9 +486,15 @@ class LiveQuotaFetcher {
           error: err.message,
           email: 'Không phát hiện phiên',
           tier: 'N/A',
-          flashQuota: 0,
-          proQuota: 0,
-          claudeQuota: 0,
+          fiveHourQuota: null,
+          weeklyQuota: null,
+          flashQuota: null,
+          proQuota: null,
+          claudeQuota: null,
+          quota: null,
+          resetTime: null,
+          fiveHourResetTime: null,
+          weeklyResetTime: null,
           modelDetails: []
         };
       }
