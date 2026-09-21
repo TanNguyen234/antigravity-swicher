@@ -58,7 +58,7 @@ def import_auth(json_file_path):
         con.execute("PRAGMA busy_timeout = 5000;")
         cur = con.cursor()
         try:
-            con.execute("BEGIN TRANSACTION;")
+            con.execute("BEGIN IMMEDIATE;")
             for k in MANAGED_KEYS:
                 if k in data and data[k] is not None:
                     cur.execute('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)', (k, data[k]))

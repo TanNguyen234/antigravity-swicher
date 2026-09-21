@@ -82,7 +82,7 @@ async function exportVscdbAuth() {
  * Ghi đè auth state bất đồng bộ vào SQLite state.vscdb của Antigravity IDE
  */
 async function importVscdbAuth(authData) {
-  if (!fs.existsSync(DB_PATH) || !authData || !fs.existsSync(BRIDGE_SCRIPT)) {
+  if (!fs.existsSync(DB_PATH) || typeof authData !== 'object' || authData === null || !fs.existsSync(BRIDGE_SCRIPT)) {
     return false;
   }
 
