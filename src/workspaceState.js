@@ -56,7 +56,7 @@ async function saveWorkspaceState(storageDir = null) {
       activePosition: null
     };
 
-    if (vscode.window && vscode.window.tabGroups && vscode.window.tabGroups.all) {
+    if (vscode && vscode.window && vscode.window.tabGroups && vscode.window.tabGroups.all) {
       for (const group of vscode.window.tabGroups.all) {
         for (const tab of group.tabs) {
           if (tab.input && tab.input.uri) {
@@ -70,7 +70,7 @@ async function saveWorkspaceState(storageDir = null) {
       }
     }
 
-    const activeEditor = vscode.window && vscode.window.activeTextEditor;
+    const activeEditor = vscode && vscode.window && vscode.window.activeTextEditor;
     if (activeEditor) {
       state.activeEditorUri = activeEditor.document.uri.toString();
       state.activePosition = {

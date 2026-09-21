@@ -198,11 +198,12 @@ class ProfileManager {
         p.email = '';
         p.name = `Slot ${p.slot} (Trống)`;
         p.tier = 'N/A';
-        p.flashQuota = 0;
-        p.proQuota = 0;
-        p.claudeQuota = 0;
+        p.flashQuota = null;
+        p.proQuota = null;
+        p.claudeQuota = null;
+        p.quota = null;
         p.resetTime = null;
-        p.status = (p.slot === this.config.activeSlot) ? 'active' : 'empty';
+        p.status = 'empty';
       }
     });
   }
@@ -290,15 +291,17 @@ class ProfileManager {
           // 3. Tài khoản mới hoàn toàn mà không có pendingLoginSlot:
           const currentActive = this.getActiveProfile();
           if (currentActive && currentActive.savedAt && currentActive.email && normalizeEmail(currentActive.email) !== normEmail) {
-            const dupOther = this.config.profiles.find(p => p.slot !== currentActive.slot && p.email && normalizeEmail(p.email) === normEmail);
-            if (!dupOther) {
-              const emptySlot = this.config.profiles.find(p => !p.savedAt || !p.email);
-              const target = emptySlot || currentActive;
-              target.savedAt = new Date().toISOString();
-              this._applyRealDataToProfile(target, realData);
-              target.status = 'active';
-              this.config.activeSlot = target.slot;
-              await this._autoBackupSlotAuth(target.slot);
+            const emptySlot = this.config.profiles.find(p => !p.savedAt || !p.email);
+            if (emptySlot) {
+              emptySlot.savedAt = new Date().toISOString();
+              this._applyRealDataToProfile(emptySlot, realData);
+              emptySlot.status = 'active';
+              if (!this._isSwitching) {
+                this.config.activeSlot = emptySlot.slot;
+              }
+              await this._autoBackupSlotAuth(emptySlot.slot);
+            } else {
+              console.warn(`[ProfileManager] Phát hiện tài khoản ngoài (${rawEmail}) nhưng tất cả các slot đã đầy. Không ghi đè profile hiện có.`);
             }
           } else if (currentActive) {
             // Active slot đang trống hoặc trùng email -> cập nhật an toàn
@@ -336,15 +339,15 @@ class ProfileManager {
     profile.planName = realData.planName || '';
     profile.promptCredits = realData.promptCredits;
     profile.flowCredits = realData.flowCredits;
-    profile.fiveHourQuota = (typeof realData.fiveHourQuota === 'number') ? realData.fiveHourQuota : (realData.flashQuota ?? 100);
-    profile.weeklyQuota = (typeof realData.weeklyQuota === 'number') ? realData.weeklyQuota : 100;
+    profile.fiveHourQuota = (typeof realData.fiveHourQuota === 'number') ? realData.fiveHourQuota : (typeof realData.flashQuota === 'number' ? realData.flashQuota : null);
+    profile.weeklyQuota = (typeof realData.weeklyQuota === 'number') ? realData.weeklyQuota : (typeof realData.proQuota === 'number' ? realData.proQuota : null);
     profile.fiveHourResetTime = realData.fiveHourResetTime || realData.resetTime;
     profile.weeklyResetTime = realData.weeklyResetTime;
     profile.fiveHourDescription = realData.fiveHourDescription || '';
     profile.weeklyDescription = realData.weeklyDescription || '';
     profile.flashQuota = profile.fiveHourQuota;
-    profile.proQuota = profile.fiveHourQuota;
-    profile.claudeQuota = (typeof realData.claudeQuota === 'number') ? realData.claudeQuota : 100;
+    profile.proQuota = profile.weeklyQuota;
+    profile.claudeQuota = (typeof realData.claudeQuota === 'number') ? realData.claudeQuota : null;
     profile.resetTime = realData.resetTime;
   }
 
@@ -615,7 +618,7 @@ class ProfileManager {
     }
   }
 
-  async _pollForNewUserSession(slotNumber, timeoutSeconds = 90) {
+  async _pollForNewUserSession(slotNumber, timeoutSeconds = 90, fetcher = liveQuotaFetcher, pollIntervalMs = 2500) {
     return new Promise((resolve) => {
       this._pendingLoginSlot = slotNumber;
       const startTime = Date.now();
@@ -630,8 +633,10 @@ class ProfileManager {
           return;
         }
 
-        liveQuotaFetcher.invalidateCache();
-        const freshData = await liveQuotaFetcher.getRealAccountAndQuota(1);
+        if (fetcher && typeof fetcher.invalidateCache === 'function') {
+          fetcher.invalidateCache();
+        }
+        const freshData = await fetcher.getRealAccountAndQuota(1);
 
         if (freshData && freshData.isLive && freshData.email && freshData.email !== 'Chưa đăng nhập' && freshData.email !== 'Không phát hiện phiên') {
           const freshEmailNorm = normalizeEmail(freshData.email);
@@ -650,14 +655,17 @@ class ProfileManager {
             return;
           }
 
-          // Tài khoản mới hợp lệ: gán ngay vào slotNumber mục tiêu
+          // Tài khoản mới hợp lệ: gọi lưu vào slotNumber trước, chỉ đổi activeSlot khi thành công
           clearInterval(interval);
-          this.config.activeSlot = slotNumber;
           const bindResult = await this.saveCurrentToSlot(slotNumber);
           this._pendingLoginSlot = null;
+          if (bindResult && bindResult.success) {
+            this.config.activeSlot = slotNumber;
+            this.saveConfig(this.config);
+          }
           resolve(bindResult);
         }
-      }, 2500);
+      }, pollIntervalMs);
     });
   }
 
@@ -668,27 +676,45 @@ class ProfileManager {
     try {
       const profile = this.config.profiles.find(p => p.slot === slotNumber);
       if (!profile) {
-        return { success: false, message: `Không tìm thấy Slot ${slotNumber}` };
+        return { success: false, reloadRequired: false, message: `Không tìm thấy Slot ${slotNumber}` };
       }
+
+      let reloadRequired = false;
 
       // 1. Nếu đang xóa activeSlot
       if (this.config.activeSlot === slotNumber) {
         const otherConfigured = this.config.profiles.find(p => p.slot !== slotNumber && p.savedAt && p.email);
         if (otherConfigured) {
-          // Thực hiện chuyển sang slot thay thế bằng luồng switchToSlot THẬT (không dùng dryRun)
+          // Thực hiện chuyển sang slot thay thế bằng luồng switchToSlot với noReload: true
           const switchRes = await this.switchToSlot(otherConfigured.slot, null, { noReload: true });
           if (!switchRes || switchRes.success !== true) {
             return {
               success: false,
+              reloadRequired: false,
               message: `Không thể chuyển sang tài khoản thay thế (Slot ${otherConfigured.slot}) trước khi xóa: ${switchRes?.message || 'Lỗi chuyển đổi'}. Tài khoản hiện tại được bảo toàn.`
             };
           }
+          reloadRequired = true;
         } else {
           // Không còn tài khoản nào khác: Logout tài khoản hiện tại và xóa sạch state vscdb
-          await this.logoutCurrent();
-          try {
-            await vscdbHelper.importVscdbAuth({});
-          } catch (e) {}
+          const logoutRes = await this.logoutCurrent();
+          const logoutOk = logoutRes === true || (logoutRes && logoutRes.success === true);
+          if (!logoutOk) {
+            return {
+              success: false,
+              reloadRequired: false,
+              message: `Lỗi đăng xuất tài khoản: ${logoutRes?.message || 'Không thể hoàn tất đăng xuất'}`
+            };
+          }
+          const vscdbCleared = await vscdbHelper.importVscdbAuth({});
+          if (!vscdbCleared) {
+            return {
+              success: false,
+              reloadRequired: false,
+              message: 'Không thể xóa sạch dữ liệu chứng thực trong state.vscdb khi xóa tài khoản cuối cùng.'
+            };
+          }
+          reloadRequired = true;
         }
       }
 
@@ -705,22 +731,40 @@ class ProfileManager {
       profile.name = `Slot ${slotNumber} (Trống)`;
       profile.email = '';
       profile.tier = 'N/A';
+      profile.planName = '';
       profile.savedAt = null;
-      profile.flashQuota = 0;
-      profile.proQuota = 0;
-      profile.claudeQuota = 0;
+      profile.quota = null;
+      profile.flashQuota = null;
+      profile.proQuota = null;
+      profile.claudeQuota = null;
+      profile.fiveHourQuota = null;
+      profile.weeklyQuota = null;
+      profile.promptCredits = null;
+      profile.flowCredits = null;
       profile.resetTime = null;
-      profile.status = (this.config.activeSlot === slotNumber) ? 'active' : 'empty';
+      profile.fiveHourResetTime = null;
+      profile.weeklyResetTime = null;
+      profile.status = 'empty';
+
+      const remainingConfigured = this.config.profiles.filter(p => p.savedAt && p.email);
+      if (remainingConfigured.length === 0) {
+        this.config.totalTokensToday = 0;
+        this.config.estimatedSavingsUSD = 0;
+      }
 
       const saved = this.saveConfig(this.config);
       if (!saved) {
-        return { success: false, message: 'Lỗi ghi tệp cấu hình sau khi xóa slot.' };
+        return { success: false, reloadRequired: false, message: 'Lỗi ghi tệp cấu hình sau khi xóa slot.' };
       }
 
-      return { success: true, message: `Đã xóa tài khoản và giải phóng Slot ${slotNumber} thành Slot trống!` };
+      return {
+        success: true,
+        reloadRequired,
+        message: `Đã xóa tài khoản và giải phóng Slot ${slotNumber} thành Slot trống!`
+      };
     } catch (err) {
       console.error(`[ProfileManager] Lỗi khi xóa profile ${slotNumber}:`, err);
-      return { success: false, message: `Lỗi: ${err.message}` };
+      return { success: false, reloadRequired: false, message: `Lỗi: ${err.message}` };
     }
   }
 
@@ -1126,7 +1170,7 @@ class ProfileManager {
 
       const bestTarget = candidates[0];
       vscode.window.showWarningMessage(
-        `[Auto-Switch] Quota tài khoản hiện tại đã cạn (${liveData.flashQuota}%). Đang chuyển sang ${bestTarget.name} (${bestTarget.flashQuota}% Quota, Zero-Reload)...`
+        `[Auto-Switch] Quota tài khoản hiện tại đã cạn (${liveData.flashQuota}%). Đang chuyển sang ${bestTarget.name} (${bestTarget.flashQuota}% Quota)...`
       );
       await this.switchToSlot(bestTarget.slot);
       return true;
