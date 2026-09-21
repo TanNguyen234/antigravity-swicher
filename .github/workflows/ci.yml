@@ -1,0 +1,46 @@
+name: CI Quality Gates
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        node-version: [18.x, 20.x]
+        python-version: ['3.11']
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Dependencies
+      run: npm install --ignore-scripts --no-audit --no-fund
+
+    - name: Typecheck
+      run: npm run typecheck
+
+    - name: Build Gate
+      run: npm run build
+
+    - name: Run Unit Test Suite
+      run: npm run test
+
+    - name: Validate Packaging Manifest
+      run: npm run check-package
+

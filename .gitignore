@@ -1,0 +1,25 @@
+# Node dependencies
+node_modules/
+
+# User Private Accounts & Local Snapshots
+profiles/
+backups/
+pending_workspace_state.json
+antigravity_profiles_bundle*.json
+
+# VS Code Extension Packaging
+*.vsix
+.vscode-test/
+
+# Python Cache & Scratch Files
+__pycache__/
+*.py[cod]
+*$py.class
+inspect_ls.py
+generate_logo.py
+
+# System & OS Files
+.DS_Store
+Thumbs.db
+*.log
+

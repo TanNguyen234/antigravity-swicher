@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "checkJs": false,
+    "allowJs": true,
+    "lib": ["ES2022", "DOM"],
+    "moduleResolution": "node",
+    "noEmit": true
+  },
+  "include": [
+    "src/**/*",
+    "test/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "profiles",
+    "backups"
+  ]
+}

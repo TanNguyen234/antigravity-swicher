@@ -1,0 +1,151 @@
+{
+  "name": "antigravity-safe-account-manager",
+  "displayName": "Antigravity Safe Account Manager & Dashboard",
+  "description": "Multi-account profile switcher, quota monitor, and token analytics dashboard for Antigravity IDE",
+  "version": "1.2.0",
+  "publisher": "local-dev",
+  "author": "Tan Nguyen & Antigravity Engineering",
+  "license": "MIT",
+  "icon": "media/logo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local-dev/antigravity-account-switcher"
+  },
+  "keywords": [
+    "antigravity",
+    "account-switcher",
+    "google-ai",
+    "gemini",
+    "claude",
+    "quota-tracker",
+    "workspace-resilience"
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "scripts": {
+    "build": "node -e \"console.log('Build OK')\"",
+    "typecheck": "tsc --noEmit -p ./jsconfig.json",
+    "test": "node test/live_runner.js --unit",
+    "test:unit": "node test/live_runner.js --unit",
+    "test:live": "node test/live_runner.js --live",
+    "test:all": "node test/live_runner.js",
+    "check-package": "vsce ls",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.3.3"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "enabledApiProposals": [
+    "antigravityUnifiedStateSync"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "antigravity-safe-switcher.switchProfile",
+        "title": "Switch Profile",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.saveCurrentProfile",
+        "title": "Save Current Session to Profile Slot",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.fastSwap",
+        "title": "Fast Swap Next Account (1 -> 2 -> 3)",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.openDashboard",
+        "title": "Open Command Center (Sidebar)",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.openDashboardTab",
+        "title": "Open Command Center in Full Tab",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.backupProfiles",
+        "title": "Backup/Export Profiles",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.deleteProfile",
+        "title": "Delete Account / Clear Profile Slot",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.exportBundle",
+        "title": "Export Profiles & Tokens Bundle (JSON)",
+        "category": "Antigravity Account"
+      },
+      {
+        "command": "antigravity-safe-switcher.importBundle",
+        "title": "Import Profiles & Tokens Bundle (JSON)",
+        "category": "Antigravity Account"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "antigravity-safe-switcher.fastSwap",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "antigravity-account-center",
+          "title": "Antigravity Center",
+          "icon": "media/shield-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "antigravity-account-center": [
+        {
+          "type": "webview",
+          "id": "antigravity-safe-switcher.dashboardView",
+          "name": "Account & Token Dashboard"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Antigravity Safe Account Switcher",
+      "properties": {
+        "antigravitySafeSwitcher.autoSwitchOnLowQuota": {
+          "type": "boolean",
+          "default": true,
+          "description": "Tự động đổi sang tài khoản có quota cao nhất khi tài khoản hiện tại <= 10% hoặc gặp 429"
+        },
+        "antigravitySafeSwitcher.warningThreshold": {
+          "type": "number",
+          "default": 15,
+          "description": "Ngưỡng cảnh báo Quota màu vàng (%)"
+        },
+        "antigravitySafeSwitcher.criticalThreshold": {
+          "type": "number",
+          "default": 10,
+          "description": "Ngưỡng kích hoạt cảnh báo đỏ và tự động chuyển đổi (%)"
+        },
+        "antigravitySafeSwitcher.preserveWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Tự động bảo toàn và khôi phục các tab code và con trỏ chuột sau khi reload"
+        }
+      }
+    }
+  }
+}
