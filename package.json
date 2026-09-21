@@ -9,7 +9,7 @@
   "icon": "media/logo.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/local-dev/antigravity-account-switcher"
+    "url": "https://github.com/TanNguyen234/antigravity-swicher"
   },
   "keywords": [
     "antigravity",
@@ -24,7 +24,7 @@
     "vscode": "^1.85.0"
   },
   "scripts": {
-    "build": "node -e \"console.log('Build OK')\"",
+    "build": "npm run typecheck",
     "typecheck": "tsc --noEmit -p ./jsconfig.json",
     "test": "node test/live_runner.js --unit",
     "test:unit": "node test/live_runner.js --unit",
@@ -88,12 +88,12 @@
       },
       {
         "command": "antigravity-safe-switcher.exportBundle",
-        "title": "Export Profiles & Tokens Bundle (JSON)",
+        "title": "Export Profiles Bundle (JSON)",
         "category": "Antigravity Account"
       },
       {
         "command": "antigravity-safe-switcher.importBundle",
-        "title": "Import Profiles & Tokens Bundle (JSON)",
+        "title": "Import Profiles Bundle (JSON)",
         "category": "Antigravity Account"
       }
     ],
@@ -144,6 +144,11 @@
           "type": "boolean",
           "default": true,
           "description": "Tự động bảo toàn và khôi phục các tab code và con trỏ chuột sau khi reload"
+        },
+        "antigravitySafeSwitcher.enableDevTools": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hiển thị công cụ kiểm thử dành cho phát triển."
         }
       }
     }
