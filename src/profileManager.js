@@ -747,30 +747,33 @@ class ProfileManager {
   }
 
   /**
-   * Đổi sang tài khoản khác HOÀN TOÀN KHÔNG RELOAD WINDOW (Zero-Reload Hot Switch)
-   * KHẮC PHỤC TRIỆT ĐỂ: Sign in failed: Error: No auth token found - should never happen
-   */
   /**
-   * Đổi sang tài khoản khác HOÀN TOÀN KHÔNG RELOAD WINDOW (Zero-Reload Hot Switch)
+   * So sánh đối soát 2 giá trị auth token từ state.vscdb
+   */
+  _areAuthTokensMatching(val1, val2) {
+    if (val1 === val2) return true;
+    if (!val1 || !val2) return false;
+    try {
+      const obj1 = typeof val1 === 'string' ? JSON.parse(val1) : val1;
+      const obj2 = typeof val2 === 'string' ? JSON.parse(val2) : val2;
+      if (obj1 && obj2 && obj1.accessToken && obj2.accessToken) {
+        return obj1.accessToken === obj2.accessToken;
+      }
+      return JSON.stringify(obj1) === JSON.stringify(obj2);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * Đổi sang tài khoản khác an toàn và tin cậy
    * @param {number} targetSlot - Slot đích (1, 2, 3)
    * @param {function} [onProgress] - Callback báo tiến trình (step, message)
-   * @param {object} [options] - { restartServer?: boolean, dryRun?: boolean }
+   * @param {object} [options] - { restartServer?: boolean, dryRun?: boolean, noReload?: boolean }
    */
   async switchToSlot(targetSlot, onProgress = null, options = {}) {
     if (this._isSwitching) {
       return { success: false, message: 'Đang có tác vụ chuyển đổi tài khoản, vui lòng đợi.' };
-    }
-
-    if (targetSlot === this.config.activeSlot) {
-      return { success: false, message: `Tài khoản Slot ${targetSlot} đang hoạt động.` };
-    }
-
-    const targetProfile = this.config.profiles.find(p => p.slot === targetSlot);
-    if (!targetProfile || !targetProfile.savedAt || !targetProfile.email) {
-      return {
-        success: false,
-        message: `Slot ${targetSlot} hiện đang trống (chưa liên kết tài khoản Google). Vui lòng bấm 'Đăng nhập Google' hoặc 'Gán phiên hiện tại' để kích hoạt slot này trước khi chuyển.`
-      };
     }
 
     this._isSwitching = true;
@@ -781,8 +784,22 @@ class ProfileManager {
     };
 
     try {
+      // 1. Kiểm tra validation cơ bản trước khi thay đổi bất kỳ trạng thái nào
+      if (targetSlot === this.config.activeSlot) {
+        return { success: false, message: `Tài khoản Slot ${targetSlot} đang hoạt động.` };
+      }
+
+      const targetProfile = this.config.profiles.find(p => p.slot === targetSlot);
+      if (!targetProfile || !targetProfile.savedAt || !targetProfile.email) {
+        return {
+          success: false,
+          message: `Slot ${targetSlot} hiện đang trống (chưa liên kết tài khoản Google). Vui lòng bấm 'Đăng nhập Google' hoặc 'Gán phiên hiện tại' để kích hoạt slot này trước khi chuyển.`
+        };
+      }
+
       progress(1, 'Sao lưu phiên hiện tại và ghi nhớ trạng thái tabs...');
-      // 1. Lấy tokens xác thực của targetSlot
+
+      // 2. Lấy tokens xác thực của targetSlot
       let targetOAuthToken = null;
       let targetVscdbAuth = null;
 
@@ -814,6 +831,21 @@ class ProfileManager {
         targetOAuthToken = cliTokenToOAuthTokenInfo(targetOAuthToken);
       }
 
+      // Xác thực nghiêm ngặt: Slot đích bắt buộc phải có dữ liệu chứng thực
+      const hasTargetAuth = Boolean(
+        targetVscdbAuth && (
+          targetVscdbAuth['antigravityUnifiedStateSync.oauthToken'] ||
+          (options.dryRun && (targetOAuthToken || Object.keys(targetVscdbAuth).length > 0))
+        )
+      );
+
+      if (!hasTargetAuth) {
+        return {
+          success: false,
+          message: `Slot ${targetSlot} (${targetProfile.name}) thiếu dữ liệu xác thực IDE (vscdb_auth.json). Vui lòng đăng nhập lại vào slot này để làm mới chứng thực.`
+        };
+      }
+
       progress(2, `Nạp chứng thực cho ${targetProfile.name} vào hệ thống...`);
 
       // Nếu chạy ở chế độ dryRun (kiểm thử logic cô lập), không tác động môi trường ngoài
@@ -832,14 +864,6 @@ class ProfileManager {
         return { success: true, targetSlot, message: `Đã chuyển sang ${targetProfile.name} (Dry Run)` };
       }
 
-      // Xác thực nghiêm ngặt khi chạy thật: Phải có vscdbAuth chứa oauthToken mới được phép chuyển
-      if (!targetVscdbAuth || !targetVscdbAuth['antigravityUnifiedStateSync.oauthToken']) {
-        return {
-          success: false,
-          message: `Slot ${targetSlot} (${targetProfile.name}) thiếu dữ liệu xác thực IDE (vscdb_auth.json). Vui lòng đăng nhập lại vào slot này để làm mới chứng thực.`
-        };
-      }
-
       // Bảo toàn các tab code đang mở & tự động lưu file bẩn
       try {
         const { saveWorkspaceState } = require('./workspaceState');
@@ -854,20 +878,94 @@ class ProfileManager {
         await this._autoBackupSlotAuth(currentActive.slot);
       }
 
-      // Ghi auth vào SQLite state.vscdb
+      // 3. Chụp bản sao lưu bộ nhớ (In-memory Snapshot) của trạng thái auth trước khi ghi
+      const previousActiveSlot = this.config.activeSlot;
+      let previousVscdbAuth = null;
       try {
-        await vscdbHelper.importVscdbAuth(targetVscdbAuth);
+        previousVscdbAuth = await vscdbHelper.exportVscdbAuth();
       } catch (e) {
-        console.warn('[ProfileManager] importVscdbAuth error:', e.message);
+        console.warn('[ProfileManager] Cảnh báo khi xuất snapshot auth trước khi đổi:', e.message);
       }
 
-      // Cập nhật CLI token file nếu có
+      // Hàm rollback nội bộ khôi phục auth snapshot và cấu hình nếu thất bại
+      const rollback = async (reason) => {
+        let rollbackSucceeded = true;
+        try {
+          if (previousVscdbAuth && Object.keys(previousVscdbAuth).length > 0) {
+            const restored = await vscdbHelper.importVscdbAuth(previousVscdbAuth);
+            if (restored !== true) {
+              rollbackSucceeded = false;
+            }
+          }
+          if (this.config.activeSlot !== previousActiveSlot) {
+            this.config.activeSlot = previousActiveSlot;
+            this.config.profiles.forEach(p => {
+              if (p.savedAt && p.email) {
+                p.status = (p.slot === previousActiveSlot) ? 'active' : 'standby';
+              } else {
+                p.status = 'empty';
+              }
+            });
+            this.saveConfig(this.config);
+          }
+        } catch (err) {
+          console.error('[ProfileManager] Lỗi thực hiện rollback:', err.message);
+          rollbackSucceeded = false;
+        }
+        return rollbackSucceeded;
+      };
+
+      // 4. Ghi auth vào SQLite state.vscdb và kiểm tra nghiêm ngặt kết quả
+      let applied = false;
+      try {
+        applied = await vscdbHelper.importVscdbAuth(targetVscdbAuth);
+      } catch (e) {
+        console.error('[ProfileManager] Lỗi importVscdbAuth:', e.message);
+        applied = false;
+      }
+
+      if (applied !== true) {
+        const rollbackSucceeded = await rollback('import_failed');
+        return {
+          success: false,
+          message: `Không thể áp dụng chứng thực vào state.vscdb của IDE cho Slot ${targetSlot}.`,
+          rollbackSucceeded
+        };
+      }
+
+      // 5. Read-after-write verification: Đọc lại từ vscdb và đối soát giá trị OAuth token
+      let verifiedAuth = null;
+      try {
+        verifiedAuth = await vscdbHelper.exportVscdbAuth();
+      } catch (e) {
+        console.warn('[ProfileManager] Lỗi exportVscdbAuth trong bước xác minh:', e.message);
+      }
+
+      const targetTokenVal = targetVscdbAuth['antigravityUnifiedStateSync.oauthToken'];
+      const writtenTokenVal = verifiedAuth ? verifiedAuth['antigravityUnifiedStateSync.oauthToken'] : null;
+
+      const isVerified = Boolean(
+        verifiedAuth &&
+        targetTokenVal &&
+        this._areAuthTokensMatching(targetTokenVal, writtenTokenVal)
+      );
+
+      if (!isVerified) {
+        const rollbackSucceeded = await rollback('verification_mismatch');
+        return {
+          success: false,
+          message: `Xác minh chứng thực thất bại sau khi ghi (Read-after-write mismatch) cho Slot ${targetSlot}.`,
+          rollbackSucceeded
+        };
+      }
+
+      // 6. Cập nhật CLI token file nếu có
       if (fs.existsSync(targetCliToken)) {
         ensureDir(path.dirname(CLI_TOKEN_FILE));
         try { fs.copyFileSync(targetCliToken, CLI_TOKEN_FILE); } catch (e) {}
       }
 
-      // Cập nhật activeSlot trong config
+      // 7. Commit state CHỈ SAU KHI xác minh thành công
       this.config.profiles.forEach(p => {
         if (p.savedAt && p.email) {
           p.status = (p.slot === targetSlot) ? 'active' : 'standby';
