@@ -4,14 +4,15 @@
   const accountsGrid = document.getElementById('accountsGrid');
   const activeSlotIndicator = document.getElementById('activeSlotIndicator');
   const activeSlotText = document.getElementById('activeSlotText');
-  const valTotalTokens = document.getElementById('valTotalTokens');
+  const valActiveAccount = document.getElementById('valActiveAccount');
+  const valActivePlan = document.getElementById('valActivePlan');
   const valFiveHourQuota = document.getElementById('valFiveHourQuota');
   const valFiveHourReset = document.getElementById('valFiveHourReset');
   const valWeeklyQuota = document.getElementById('valWeeklyQuota');
   const valWeeklyReset = document.getElementById('valWeeklyReset');
-  const valSavings = document.getElementById('valSavings');
-  const tokenChart = document.getElementById('tokenChart');
-  const chartTooltip = document.getElementById('chartTooltip');
+  const valCredits = document.getElementById('valCredits');
+  const valLastSyncSub = document.getElementById('valLastSyncSub');
+  const lastSyncedText = document.getElementById('lastSyncedText');
 
   // Stepper Elements
   const switchingStepper = document.getElementById('switchingStepper');
@@ -57,7 +58,6 @@
   let switchingSlot = null;
   let switchingProgressMsg = '';
   let liveCountdownInterval = null;
-  let cachedHourlyUsage = [];
   let currentActiveSlotNum = null;
 
   // HTML Escape Helper
@@ -73,12 +73,12 @@
 
   // Quota display helper: 0 is 0%, null/undefined is unknown '—'
   function formatQuotaDisplay(val) {
-    if (typeof val === 'number') return `${val}%`;
+    if (typeof val === 'number' && Number.isFinite(val)) return `${Math.round(val)}%`;
     return '—';
   }
 
   function getBarClass(val, thresholds) {
-    if (typeof val !== 'number') return 'fill-neutral';
+    if (typeof val !== 'number' || !Number.isFinite(val)) return 'fill-neutral';
     const crit = (thresholds && typeof thresholds.critical === 'number') ? thresholds.critical : 10;
     const warn = (thresholds && typeof thresholds.warning === 'number') ? thresholds.warning : 15;
     if (val <= crit) return 'fill-rose';
@@ -87,7 +87,7 @@
   }
 
   function getQuotaColor(val, thresholds) {
-    if (typeof val !== 'number') return 'var(--text-muted)';
+    if (typeof val !== 'number' || !Number.isFinite(val)) return 'var(--text-muted)';
     const crit = (thresholds && typeof thresholds.critical === 'number') ? thresholds.critical : 10;
     const warn = (thresholds && typeof thresholds.warning === 'number') ? thresholds.warning : 15;
     if (val <= crit) return 'var(--color-danger)';
@@ -95,15 +95,14 @@
     return 'inherit';
   }
 
-  function formatCompactTokens(num) {
-    if (num === undefined || num === null) return '0';
-    if (num >= 1000000) {
-      return (num / 1000000).toFixed(2) + 'M';
+  function formatSyncTime(isoStr) {
+    if (!isoStr) return 'Chưa đồng bộ';
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch (e) {
+      return isoStr;
     }
-    if (num >= 1000) {
-      return (num / 1000).toFixed(1) + 'K';
-    }
-    return num.toString();
   }
 
   function formatTimeRemaining(resetTimeStr) {
@@ -262,103 +261,11 @@
     }, 1000);
   }
 
-  function setupChartInteraction() {
-    if (!tokenChart || !chartTooltip) return;
-    const chartWrapper = tokenChart.parentElement;
-    if (!chartWrapper) return;
-
-    chartWrapper.addEventListener('mousemove', (e) => {
-      if (!cachedHourlyUsage || cachedHourlyUsage.length === 0) return;
-      const rect = tokenChart.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const normX = Math.max(0, Math.min(1, mouseX / rect.width));
-      const idx = Math.round(normX * (cachedHourlyUsage.length - 1));
-      const item = cachedHourlyUsage[idx];
-      if (!item) return;
-
-      const width = 300;
-      const padding = 14;
-      const stepX = (width - padding * 2) / (cachedHourlyUsage.length - 1);
-      const pointX = padding + idx * stepX;
-
-      const crosshair = document.getElementById('chartCrosshair');
-      if (crosshair) {
-        crosshair.setAttribute('x1', pointX);
-        crosshair.setAttribute('x2', pointX);
-        crosshair.style.display = 'block';
-      }
-
-      const tokenStr = formatCompactTokens(item.tokens);
-      chartTooltip.style.display = 'block';
-      chartTooltip.innerHTML = `
-        <div style="font-weight: 700; color: var(--color-brand); margin-bottom: 2px;">Giờ ${escapeHtml(item.hour)}:00</div>
-        <div>Tokens: <span style="font-weight: 600; color: #f0f6fc;">${tokenStr}</span></div>
-        <div>Quota còn: <span style="font-weight: 600; color: var(--color-success);">${formatQuotaDisplay(item.quota)}</span></div>
-      `;
-
-      const leftPx = (pointX / width) * rect.width;
-      chartTooltip.style.left = `${leftPx}px`;
-      chartTooltip.style.top = `15px`;
-    });
-
-    chartWrapper.addEventListener('mouseleave', () => {
-      if (chartTooltip) chartTooltip.style.display = 'none';
-      const crosshair = document.getElementById('chartCrosshair');
-      if (crosshair) crosshair.style.display = 'none';
-    });
-  }
-
-  function renderChart(hourlyUsage) {
-    if (!tokenChart || !hourlyUsage || hourlyUsage.length === 0) return;
-    cachedHourlyUsage = hourlyUsage;
-
-    const width = 300;
-    const height = 95;
-    const padding = 14;
-
-    const maxTokens = Math.max(...hourlyUsage.map(d => d.tokens), 50000);
-    const stepX = (width - padding * 2) / (hourlyUsage.length - 1);
-
-    const points = hourlyUsage.map((d, idx) => {
-      const x = padding + idx * stepX;
-      const y = height - padding - (d.tokens / maxTokens) * (height - padding * 2);
-      return { x, y, hour: d.hour, tokens: d.tokens, quota: d.quota };
-    });
-
-    const dPath = points.reduce((acc, p, idx) => {
-      return idx === 0 ? `M ${p.x} ${p.y}` : `${acc} L ${p.x} ${p.y}`;
-    }, '');
-
-    const areaPath = `${dPath} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
-
-    let svgHtml = `
-      <defs>
-        <linearGradient id="gradArea" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stop-color="#388bfd" stop-opacity="0.32"/>
-          <stop offset="100%" stop-color="#388bfd" stop-opacity="0.01"/>
-        </linearGradient>
-      </defs>
-      <line id="chartCrosshair" class="chart-crosshair" y1="5" y2="${height - padding}" x1="0" x2="0" style="display: none;" />
-      <path d="${areaPath}" fill="url(#gradArea)" />
-      <path d="${dPath}" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-    `;
-
-    points.forEach((p, idx) => {
-      if (idx % 4 === 0 || idx === points.length - 1) {
-        svgHtml += `
-          <circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#58a6ff" class="chart-dot" />
-          <text x="${p.x}" y="${height - 2}" font-size="7.5" fill="#8b949e" text-anchor="middle" font-family="ui-monospace, monospace">${escapeHtml(p.hour)}h</text>
-        `;
-      }
-    });
-
-    tokenChart.innerHTML = svgHtml;
-  }
-
   function renderDashboard(data) {
     if (!data || !Array.isArray(data.profiles)) return;
 
     currentActiveSlotNum = data.activeSlot;
+    const isAuth = Boolean(data.sessionAuthenticated);
     const activeProfile = data.profiles.find(p => p.slot === data.activeSlot) || data.profiles[0];
 
     // Platform Keycap (Cmd vs Ctrl)
@@ -381,27 +288,49 @@
       btnSimulateLow.style.display = data.isDevelopment ? 'inline-flex' : 'none';
     }
 
-    // Active Slot Indicator Text
+    // Active Slot Indicator Text: Phân biệt rõ phiên đăng nhập với cấu hình slot đã lưu
     const hasConfigured = data.profiles.some(p => p.savedAt && p.email);
     if (activeSlotText) {
-      if (!hasConfigured) {
+      if (!isAuth || !hasConfigured) {
         activeSlotText.textContent = 'Chưa đăng nhập';
+        if (activeSlotIndicator) {
+          const dot = activeSlotIndicator.querySelector('.status-indicator-dot');
+          if (dot) dot.style.background = '#8b949e';
+        }
       } else {
         activeSlotText.textContent = `Slot ${data.activeSlot} Đang hoạt động`;
+        if (activeSlotIndicator) {
+          const dot = activeSlotIndicator.querySelector('.status-indicator-dot');
+          if (dot) dot.style.background = 'var(--color-success)';
+        }
       }
     }
 
-    // Top 4-Metric Telemetry Stat Bar
-    if (valTotalTokens && data.totalTokensToday !== undefined) {
-      valTotalTokens.textContent = formatCompactTokens(data.totalTokensToday);
+    // Top 4-Metric Real Observed Stats Bar
+    if (valActiveAccount) {
+      if (isAuth && activeProfile && activeProfile.email) {
+        valActiveAccount.textContent = activeProfile.name || activeProfile.email;
+        valActiveAccount.title = activeProfile.email;
+      } else {
+        valActiveAccount.textContent = 'Chưa đăng nhập';
+        valActiveAccount.title = '';
+      }
+    }
+    if (valActivePlan) {
+      if (isAuth && activeProfile && activeProfile.email) {
+        valActivePlan.textContent = activeProfile.planName || activeProfile.tier || 'Google AI';
+      } else {
+        valActivePlan.textContent = 'Chưa kết nối phiên';
+      }
     }
     if (valFiveHourQuota) {
       const q5h = activeProfile ? (activeProfile.fiveHourQuota ?? activeProfile.flashQuota ?? null) : null;
       valFiveHourQuota.textContent = formatQuotaDisplay(q5h);
     }
     if (valFiveHourReset) {
-      if (activeProfile && activeProfile.fiveHourResetTime) {
-        valFiveHourReset.textContent = 'Hồi sau ' + formatTimeRemaining(activeProfile.fiveHourResetTime);
+      const r5h = activeProfile ? (activeProfile.fiveHourResetTime ?? activeProfile.resetTime) : null;
+      if (r5h) {
+        valFiveHourReset.textContent = 'Hồi sau ' + formatTimeRemaining(r5h);
       } else {
         valFiveHourReset.textContent = 'Không rõ';
       }
@@ -417,19 +346,22 @@
         valWeeklyReset.textContent = 'Không rõ';
       }
     }
-    if (valSavings && data.estimatedSavingsUSD !== undefined) {
-      valSavings.textContent = '$' + data.estimatedSavingsUSD.toFixed(2);
+    if (valCredits) {
+      const cr = activeProfile ? activeProfile.promptCredits : null;
+      valCredits.textContent = (typeof cr === 'number' && Number.isFinite(cr)) ? `${cr}` : 'N/A';
     }
-
-    // Render Telemetry Chart
-    if (data.hourlyUsage) {
-      renderChart(data.hourlyUsage);
+    if (valLastSyncSub) {
+      valLastSyncSub.textContent = data.lastSyncedAt ? `Cập nhật: ${formatSyncTime(data.lastSyncedAt)}` : 'Chưa đồng bộ';
+    }
+    if (lastSyncedText) {
+      lastSyncedText.textContent = data.lastSyncedAt ? `Cập nhật: ${formatSyncTime(data.lastSyncedAt)}` : 'Live RPC';
     }
 
     // Render Account Profile Cards
     accountsGrid.innerHTML = '';
+    const isSessionAuth = Boolean(data.sessionAuthenticated);
     data.profiles.forEach(p => {
-      const isCurrent = (p.slot === data.activeSlot);
+      const isCurrent = isSessionAuth && (p.slot === data.activeSlot);
       const isConfigured = Boolean(p.savedAt && p.email);
       const card = document.createElement('div');
       const safeSlot = escapeHtml(p.slot);
@@ -490,9 +422,9 @@
         const qWkReset = p.weeklyResetTime;
         const qClaude = p.claudeQuota ?? null;
 
-        const q5hWidth = typeof q5h === 'number' ? Math.max(0, Math.min(100, q5h)) : 0;
-        const qWkWidth = typeof qWk === 'number' ? Math.max(0, Math.min(100, qWk)) : 0;
-        const qClaudeWidth = typeof qClaude === 'number' ? Math.max(0, Math.min(100, qClaude)) : 0;
+        const q5hWidth = (typeof q5h === 'number' && Number.isFinite(q5h)) ? Math.max(0, Math.min(100, q5h)) : 0;
+        const qWkWidth = (typeof qWk === 'number' && Number.isFinite(qWk)) ? Math.max(0, Math.min(100, qWk)) : 0;
+        const qClaudeWidth = (typeof qClaude === 'number' && Number.isFinite(qClaude)) ? Math.max(0, Math.min(100, qClaude)) : 0;
 
         const q5hDisp = formatQuotaDisplay(q5h);
         const qWkDisp = formatQuotaDisplay(qWk);
@@ -639,9 +571,7 @@
     });
   }
 
-  // Setup interactive chart crosshair and tooltips
-  setupChartInteraction();
-
   // Khởi động gửi yêu cầu lấy dữ liệu lần đầu
   vscode.postMessage({ command: 'refresh' });
 })();
+

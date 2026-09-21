@@ -101,26 +101,26 @@
     <!-- Render động bởi dashboard.js -->
   </div>
 
-  <!-- Section: Thống kê & Phân tích Token -->
+  <!-- Section: Thống kê Quota & Đồng bộ Thực tế -->
   <div class="section-headline">
     <div class="headline-left">
-      <span class="headline-title">MỨC TIÊU THỤ TOKEN & QUOTA (24H)</span>
+      <span class="headline-title">THÔNG TIN QUOTA & ĐỒNG BỘ THỰC TẾ</span>
     </div>
     <div class="headline-status" style="color: var(--text-muted); font-size: 11px;">
       <span class="status-indicator-dot" style="background: var(--color-brand);"></span>
-      <span>Live RPC Sync</span>
+      <span id="lastSyncedText">Live RPC</span>
     </div>
   </div>
 
   <div class="chart-container" id="chartContainer">
     <div class="telemetry-stats-grid">
       <div class="telemetry-stat-card">
-        <span class="telemetry-stat-label">Tokens 24h</span>
-        <span class="telemetry-stat-val val-brand" id="valTotalTokens">--</span>
-        <span class="telemetry-stat-sub">Tiêu thụ tích lũy</span>
+        <span class="telemetry-stat-label">Tài khoản Active</span>
+        <span class="telemetry-stat-val val-brand" id="valActiveAccount" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</span>
+        <span class="telemetry-stat-sub" id="valActivePlan">--</span>
       </div>
       <div class="telemetry-stat-card">
-        <span class="telemetry-stat-label">Hồi 5-Giờ</span>
+        <span class="telemetry-stat-label">Hạn mức 5-Giờ</span>
         <span class="telemetry-stat-val val-success" id="valFiveHourQuota">--</span>
         <span class="telemetry-stat-sub" id="valFiveHourReset">Rolling limit</span>
       </div>
@@ -130,21 +130,10 @@
         <span class="telemetry-stat-sub" id="valWeeklyReset">Weekly quota</span>
       </div>
       <div class="telemetry-stat-card">
-        <span class="telemetry-stat-label">Tiết kiệm API</span>
-        <span class="telemetry-stat-val val-purple" id="valSavings">$0.00</span>
-        <span class="telemetry-stat-sub">So với direct API</span>
+        <span class="telemetry-stat-label">Prompt Credits</span>
+        <span class="telemetry-stat-val val-purple" id="valCredits">--</span>
+        <span class="telemetry-stat-sub" id="valLastSyncSub">Cập nhật: --</span>
       </div>
-    </div>
-
-    <div class="chart-wrapper">
-      <svg class="chart-svg" id="tokenChart" viewBox="0 0 300 95" preserveAspectRatio="none"></svg>
-      <div class="chart-tooltip" id="chartTooltip" style="display: none;"></div>
-    </div>
-
-    <div class="chart-legend">
-      <div class="legend-item"><span class="legend-dot dot-tokens"></span><span>Tokens tiêu thụ (24h)</span></div>
-      <div class="legend-item"><span class="legend-dot dot-5h"></span><span>Rolling 5h Quota</span></div>
-      <div class="legend-item"><span class="legend-dot dot-weekly"></span><span>Weekly Quota</span></div>
     </div>
   </div>
 

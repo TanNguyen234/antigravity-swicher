@@ -5,7 +5,7 @@
 <h1 align="center">Antigravity Safe Account Manager & Dashboard</h1>
 
 <p align="center">
-  <b>Extension quản lý đa tài khoản Google AI, tự động luân chuyển phiên làm việc khi cạn hạn mức, bảo toàn tab mở và con trỏ chuột qua reload, cùng bảng điều khiển Token Analytics cho Antigravity IDE.</b>
+  <b>Extension quản lý đa tài khoản Google AI, tự động luân chuyển phiên làm việc khi cạn hạn mức, bảo toàn tab mở và con trỏ chuột qua reload, cùng bảng điều khiển giám sát hạn mức thời gian thực cho Antigravity IDE.</b>
 </p>
 
 <p align="center">
@@ -27,21 +27,21 @@
 ### 2. 🎨 Giao Diện Dashboard Tối Giản
 - Thiết kế tối giản, trực quan, tương phản chuẩn WCAG AA.
 - **Bố cục Bento Grid**: Tự động co giãn từ bảng điều khiển Sidebar (1 cột) đến Tab rộng (3 cột).
-- **Banner Phím Tắt**: `Ctrl` + `Alt` + `S` (macOS: `Cmd` + `Alt` + `S`) để xoay vòng nhanh sang tài khoản kế tiếp.
+- **Banner Phím Tắt**: `Ctrl` + `Alt` + `S` (macOS: `Cmd` + `Alt` + `S`) để xoay vòng nhanh sang tài khoản kế tiếp (1 -> 2 -> 3).
 - **Stepper HUD Visualizer**: Hiển thị tiến trình trực quan khi đổi tài khoản (`Sao lưu` $\rightarrow$ `Nạp Token` $\rightarrow$ `Làm mới IDE` $\rightarrow$ `Hoàn tất`).
-- **Hệ Thống Quota Gauges Đa Mô Hình**: Phân màu trực quan theo thời gian thực (Xanh >30%, Vàng 11-30%, Đỏ ≤10%) cho **Gemini Flash**, **Gemini Pro** và **Claude 3.7 Sonnet**.
+- **Hệ Thống Quota Gauges Đa Mô Hình**: Phân màu trực quan theo thời gian thực (Xanh >15%, Vàng 11-15%, Đỏ ≤10%) cho **Gemini 5h**, **Gemini Weekly** và **Partner Models**.
 - Đổi tên gợi nhớ inline (click biểu tượng bút chì) và sao chép email 1-click có tooltip phản hồi.
-- Đồng hồ đếm ngược phục hồi quota thời gian thực (`Hồi sau: Xh Ym Zs`).
+- Đồng hồ đếm ngược phục hồi quota thời gian thực (`Hồi sau: Xh Ym Zs`) và nhãn thời gian đồng bộ `lastSyncedAt`.
 
 ### 3. 🧠 Tự Động Luân Chuyển Khi Cạn Hạn Mức (Smart Auto-Switch)
-- Tự động phát hiện khi tài khoản đang hoạt động cạn hạn mức (Quota $\le 10\%$ hoặc gặp mã lỗi 429).
-- Thuật toán chấm điểm tối ưu:
-  $$\text{Score} = (\text{Flash} \times 0.55) + (\text{Pro} \times 0.35) + (\text{Claude} \times 0.10)$$
-- **Ngưỡng an toàn Hysteresis (+15 điểm)**: Chỉ kích hoạt chuyển đổi khi tài khoản ứng viên vượt trội ít nhất 15 điểm so với tài khoản hiện tại, hạn chế việc đảo slot liên tục khi quota xấp xỉ nhau.
+- Tự động phát hiện khi tài khoản đang hoạt động cạn hạn mức đã biết (Quota $\le 10\%$ hoặc gặp mã lỗi 429). Hạn mức không xác định (`null`) không bao giờ kích hoạt nhầm việc chuyển đổi.
+- Thuật toán chấm điểm theo các hạn mức độc lập:
+  $$\text{Score} = (\text{5h} \times 0.6) + (\text{Weekly} \times 0.4)$$
+- Ưu tiên ứng viên có thời điểm hồi phục hạn mức trong tương lai gần hơn khi điểm số tương đương.
 
 ### 4. 🛡️ Lưu Trữ An Toàn Qua OS SecretStorage
 - Mã hóa token ở cấp hệ điều hành thông qua **VS Code SecretStorage** (Windows DPAPI / macOS Keychain / Linux SecretService).
-- **Quy trình Di Chuyển An Toàn (Verified Migration)**: Bắt buộc đọc lại và xác minh thành công từ SecretStorage trước khi hủy các file token plaintext cũ trên đĩa. Khi chạy ngoài môi trường VS Code (testing/scripts), file được giữ nguyên an toàn.
+- **Quy trình Di Chuyển An Toàn (Verified Migration)**: Bắt buộc đọc lại và xác minh thành công từ SecretStorage trước khi hủy các file token plaintext cũ trên đĩa. Không bao giờ tạo thêm bản sao credential dạng plaintext trong thư mục profile.
 - Cấu hình được lưu trữ tại thư mục lưu trữ tiêu chuẩn của hệ điều hành (`globalStorageUri` / standard storage), không sử dụng đường dẫn cứng cục bộ.
 
 ### 5. 💾 Bảo Toàn Trạng Thái Workspace (Workspace State Resilience)
@@ -49,8 +49,8 @@
 - Ghi nhớ và phục hồi danh sách tab đang mở, view column và vị trí con trỏ chuột.
 
 ### 6. 📦 Xuất / Nhập Bundle Cấu Hình (Profiles Bundle)
-- Đóng gói cấu hình 3 slot cùng token vào 1 tệp JSON duy nhất (`antigravity_profiles_bundle.json`).
-- Hỗ trợ di chuyển cấu hình sang máy tính mới qua Command Palette.
+- Đóng gói cấu hình 3 slot (metadata, tên gợi nhớ, cấu hình quota) vào tệp JSON (`antigravity_profiles_bundle.json`). Bundle không chứa bí mật xác thực/token để đảm bảo an toàn tuyệt đối.
+- Xác thực schema tối thiểu trước khi nạp nhằm bảo vệ cấu hình hiện tại không bị lỗi khi import bundle hỏng.
 
 ---
 
