@@ -11,6 +11,7 @@ process.env.NODE_ENV = 'test';
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const cp = require('child_process');
 
 const liveQuotaFetcher = require('../src/liveQuotaFetcher');
@@ -445,18 +446,46 @@ async function runAllTests() {
     const secretStore = new ProfileSecretStorage(mockContext);
     const pm = new ProfileManager(secretStore);
 
+    const vscdbHelper = require('../src/vscdbHelper');
+    const origImport = vscdbHelper.importVscdbAuth;
+    const origExport = vscdbHelper.exportVscdbAuth;
+
     pm.config.activeSlot = 2;
     pm.config.profiles[0].email = 'survivor@gmail.com';
     pm.config.profiles[0].savedAt = new Date().toISOString();
+    pm.config.profiles[0].status = 'standby';
 
     pm.config.profiles[1].email = 'to_delete@gmail.com';
     pm.config.profiles[1].savedAt = new Date().toISOString();
-    await secretStore.storeTokens(2, { accessToken: 'delete_me' });
+    pm.config.profiles[1].status = 'active';
 
-    const delRes = await pm.deleteProfile(2);
-    report('unit', 'Delete Profile Success', delRes.success === true);
-    report('unit', 'Deleted Slot Status Empty', pm.config.profiles[1].email === '' && pm.config.profiles[1].status === 'empty');
-    report('unit', 'Active Slot Cascaded to Available Slot 1', pm.config.activeSlot === 1);
+    const survivorAuth = { 'antigravityUnifiedStateSync.oauthToken': JSON.stringify({ accessToken: 'survivor_token' }) };
+    const deleteAuth = { 'antigravityUnifiedStateSync.oauthToken': JSON.stringify({ accessToken: 'delete_me' }) };
+
+    await secretStore.storeTokens(1, { accessToken: 'survivor_token' }, survivorAuth);
+    await secretStore.storeTokens(2, { accessToken: 'delete_me' }, deleteAuth);
+
+    let currentVscdb = deleteAuth;
+    let switchImportOccurred = false;
+    vscdbHelper.exportVscdbAuth = async () => currentVscdb;
+    vscdbHelper.importVscdbAuth = async (data) => {
+      currentVscdb = data;
+      if (data && data['antigravityUnifiedStateSync.oauthToken'] === survivorAuth['antigravityUnifiedStateSync.oauthToken']) {
+        switchImportOccurred = true;
+      }
+      return true;
+    };
+
+    try {
+      const delRes = await pm.deleteProfile(2);
+      report('unit', 'Delete Profile Success', delRes.success === true);
+      report('unit', 'Switched credentials before deleting old slot', switchImportOccurred === true);
+      report('unit', 'Deleted Slot Status Empty', pm.config.profiles[1].email === '' && pm.config.profiles[1].status === 'empty');
+      report('unit', 'Active Slot Cascaded to Available Slot 1', pm.config.activeSlot === 1 && pm.config.profiles[0].status === 'active');
+    } finally {
+      vscdbHelper.importVscdbAuth = origImport;
+      vscdbHelper.exportVscdbAuth = origExport;
+    }
   } catch (err) {
     report('unit', 'Delete Profile Test', false, err.message);
   }
@@ -714,6 +743,272 @@ async function runAllTests() {
     }
   } catch (err) {
     report('unit', 'Reliable switchToSlot Test Suite', false, err.message);
+  }
+
+  // TEST A20: Account-State Correctness (Delete, Rollback, VSCDB Restore & Config Persistence)
+  console.log('\n--- [A20] Account-State Correctness & Integrity Gates ---');
+  try {
+    const vscdbHelper = require('../src/vscdbHelper');
+    const origImport = vscdbHelper.importVscdbAuth;
+    const origExport = vscdbHelper.exportVscdbAuth;
+
+    try {
+      const slot1Auth = { 'antigravityUnifiedStateSync.oauthToken': JSON.stringify({ accessToken: 'slot1_token' }) };
+      const slot2Auth = { 'antigravityUnifiedStateSync.oauthToken': JSON.stringify({ accessToken: 'slot2_token' }) };
+
+      // 1. Failed replacement switch does not delete active profile
+      const mockStorage1 = new Map();
+      const secretStore1 = new ProfileSecretStorage({
+        secrets: {
+          store: async (k, v) => mockStorage1.set(k, v),
+          get: async (k) => mockStorage1.get(k) || null,
+          delete: async (k) => mockStorage1.delete(k)
+        }
+      });
+      const pm1 = new ProfileManager(secretStore1);
+      pm1.config.activeSlot = 1;
+      pm1.config.profiles[0].email = 'primary_active@gmail.com';
+      pm1.config.profiles[0].savedAt = new Date().toISOString();
+      pm1.config.profiles[0].status = 'active';
+
+      pm1.config.profiles[1].email = 'broken_replacement@gmail.com';
+      pm1.config.profiles[1].savedAt = new Date().toISOString();
+      pm1.config.profiles[1].status = 'standby';
+
+      await secretStore1.storeTokens(1, { accessToken: 'slot1_token' }, slot1Auth);
+      await secretStore1.storeTokens(2, { accessToken: 'slot2_token' }, slot2Auth);
+
+      vscdbHelper.exportVscdbAuth = async () => slot1Auth;
+      vscdbHelper.importVscdbAuth = async (data) => {
+        if (data && data['antigravityUnifiedStateSync.oauthToken'] === slot2Auth['antigravityUnifiedStateSync.oauthToken']) {
+          return false; // Replacement switch fails
+        }
+        return true;
+      };
+
+      const failDelRes = await pm1.deleteProfile(1);
+      report('unit', 'Failed replacement switch preserves active profile intact',
+        failDelRes.success === false &&
+        pm1.config.activeSlot === 1 &&
+        pm1.config.profiles[0].email === 'primary_active@gmail.com' &&
+        pm1.config.profiles[0].status === 'active' &&
+        Boolean(await secretStore1.getTokens(1)).oauthToken !== null
+      );
+
+      // 2. Missing previous auth snapshot prevents unsafe switch
+      const pm2 = new ProfileManager();
+      pm2.config.activeSlot = 1;
+      pm2.config.profiles[0].email = 'active_without_snapshot@gmail.com';
+      pm2.config.profiles[0].savedAt = new Date().toISOString();
+      pm2.config.profiles[0].status = 'active';
+
+      pm2.config.profiles[1].email = 'target_profile@gmail.com';
+      pm2.config.profiles[1].savedAt = new Date().toISOString();
+      pm2.config.profiles[1].status = 'standby';
+
+      vscdbHelper.exportVscdbAuth = async () => ({}); // Snapshot export missing/empty
+      let importCalled = false;
+      vscdbHelper.importVscdbAuth = async () => { importCalled = true; return true; };
+
+      const noSnapshotRes = await pm2.switchToSlot(2, null, { noReload: true });
+      report('unit', 'Missing previous auth snapshot prevents unsafe switch',
+        noSnapshotRes.success === false &&
+        noSnapshotRes.message.includes('Không thể chụp bản sao lưu') &&
+        pm2.config.activeSlot === 1 &&
+        importCalled === false
+      );
+
+      // 3. Rollback with no snapshot reports rollbackSucceeded: false
+      const pm3 = new ProfileManager();
+      pm3.config.activeSlot = 1;
+      pm3.config.profiles[0].email = '';
+      pm3.config.profiles[0].savedAt = null; // Unconfigured slot
+      pm3.config.profiles[0].status = 'empty';
+
+      pm3.config.profiles[1].email = 'target_slot2@gmail.com';
+      pm3.config.profiles[1].savedAt = new Date().toISOString();
+      pm3.config.profiles[1].status = 'standby';
+
+      const mockStore3 = new ProfileSecretStorage({
+        secrets: { store: async () => {}, get: async () => null, delete: async () => {} }
+      });
+      pm3.secretStore = mockStore3;
+      await mockStore3.storeTokens(2, { accessToken: 'tok2' }, slot2Auth);
+
+      vscdbHelper.exportVscdbAuth = async () => null; // No snapshot
+      vscdbHelper.importVscdbAuth = async () => false; // Write fails
+
+      const noSnapRollbackRes = await pm3.switchToSlot(2, null, { noReload: true });
+      report('unit', 'Rollback with no snapshot reports rollbackSucceeded: false',
+        noSnapRollbackRes.success === false &&
+        noSnapRollbackRes.rollbackSucceeded === false
+      );
+
+      // 4. Failed saveConfig() triggers auth rollback
+      const pm4 = new ProfileManager();
+      pm4.config.activeSlot = 1;
+      pm4.config.profiles[0].email = 'user1@gmail.com';
+      pm4.config.profiles[0].savedAt = new Date().toISOString();
+      pm4.config.profiles[0].status = 'active';
+
+      pm4.config.profiles[1].email = 'user2@gmail.com';
+      pm4.config.profiles[1].savedAt = new Date().toISOString();
+      pm4.config.profiles[1].status = 'standby';
+
+      const mockStore4 = new ProfileSecretStorage({
+        secrets: { store: async () => {}, get: async () => null, delete: async () => {} }
+      });
+      pm4.secretStore = mockStore4;
+      await mockStore4.storeTokens(1, { accessToken: 'u1' }, slot1Auth);
+      await mockStore4.storeTokens(2, { accessToken: 'u2' }, slot2Auth);
+
+      let revertedToSlot1 = false;
+      let targetWriteCompleted = false;
+      vscdbHelper.exportVscdbAuth = async () => {
+        if (!targetWriteCompleted) return slot1Auth;
+        return slot2Auth;
+      };
+      vscdbHelper.importVscdbAuth = async (data) => {
+        if (data && data['antigravityUnifiedStateSync.oauthToken'] === slot2Auth['antigravityUnifiedStateSync.oauthToken']) {
+          targetWriteCompleted = true;
+          return true;
+        }
+        if (data && data['antigravityUnifiedStateSync.oauthToken'] === slot1Auth['antigravityUnifiedStateSync.oauthToken']) {
+          revertedToSlot1 = true;
+          return true;
+        }
+        return true;
+      };
+
+      pm4.saveConfig = () => false; // Simulate config persistence failure
+
+      const failedSaveRes = await pm4.switchToSlot(2, null, { noReload: true });
+      report('unit', 'Failed saveConfig() triggers auth rollback',
+        failedSaveRes.success === false &&
+        failedSaveRes.rollbackSucceeded === true &&
+        revertedToSlot1 === true &&
+        pm4.config.activeSlot === 1
+      );
+
+      // 5. VSCDB import removes stale managed keys absent from snapshot
+      let vscdbStaleCleaned = false;
+      try {
+        const { execFileSync } = require('child_process');
+        const pyCmd = vscdbHelper.resolvePythonCommand();
+        const bridgeScript = path.join(__dirname, '..', 'src', 'vscdb_bridge.py');
+        const tempTestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscdb_unit_'));
+        const dbDir = path.join(tempTestDir, 'Antigravity IDE', 'User', 'globalStorage');
+        fs.mkdirSync(dbDir, { recursive: true });
+        const dbPath = path.join(dbDir, 'state.vscdb');
+
+        const initPy = [
+          'import sqlite3',
+          `con = sqlite3.connect(r"""${dbPath}""")`,
+          'cur = con.cursor()',
+          'cur.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")',
+          'cur.execute("INSERT INTO ItemTable VALUES (\'antigravityUnifiedStateSync.oauthToken\', \'token_old\')")',
+          'cur.execute("INSERT INTO ItemTable VALUES (\'antigravityUnifiedStateSync.userStatus\', \'status_old\')")',
+          'cur.execute("INSERT INTO ItemTable VALUES (\'antigravity.profileUrl\', \'url_old\')")',
+          'cur.execute("INSERT INTO ItemTable VALUES (\'antigravityUnifiedStateSync.modelCredits\', \'credits_old\')")',
+          'cur.execute("INSERT INTO ItemTable VALUES (\'unrelatedKey\', \'keep_me\')")',
+          'con.commit()',
+          'con.close()'
+        ].join('\n');
+
+        execFileSync(pyCmd, ['-c', initPy], { stdio: 'ignore' });
+
+        const snapshotFile = path.join(tempTestDir, 'import_snap.json');
+        fs.writeFileSync(snapshotFile, JSON.stringify({
+          'antigravityUnifiedStateSync.oauthToken': 'token_new'
+        }), 'utf8');
+
+        const testEnv = Object.assign({}, process.env, {
+          APPDATA: tempTestDir,
+          XDG_CONFIG_HOME: tempTestDir,
+          HOME: tempTestDir,
+          USERPROFILE: tempTestDir
+        });
+
+        const importOut = execFileSync(pyCmd, [bridgeScript, 'import', snapshotFile], {
+          env: testEnv,
+          encoding: 'utf8'
+        });
+
+        const verifyPy = [
+          'import sqlite3, json',
+          `con = sqlite3.connect(r"""${dbPath}""")`,
+          'cur = con.cursor()',
+          'cur.execute("SELECT key, value FROM ItemTable")',
+          'rows = dict(cur.fetchall())',
+          'con.close()',
+          'print(json.dumps(rows))'
+        ].join('\n');
+
+        const verifyOut = execFileSync(pyCmd, ['-c', verifyPy], {
+          env: testEnv,
+          encoding: 'utf8'
+        });
+        const rows = JSON.parse(verifyOut.trim());
+
+        const oauthUpdated = rows['antigravityUnifiedStateSync.oauthToken'] === 'token_new';
+        const userStatusDeleted = !('antigravityUnifiedStateSync.userStatus' in rows);
+        const profileUrlDeleted = !('antigravity.profileUrl' in rows);
+        const creditsDeleted = !('antigravityUnifiedStateSync.modelCredits' in rows);
+        const unrelatedPreserved = rows['unrelatedKey'] === 'keep_me';
+
+        vscdbStaleCleaned = (importOut || '').trim() === 'OK' &&
+          oauthUpdated && userStatusDeleted && profileUrlDeleted && creditsDeleted && unrelatedPreserved;
+
+        try { fs.rmSync(tempTestDir, { recursive: true, force: true }); } catch (e) {}
+      } catch (e) {
+        console.warn('VSCDB test warning:', e.message);
+      }
+      report('unit', 'VSCDB import removes stale managed keys absent from snapshot', vscdbStaleCleaned);
+
+      // 6. Successful switch still behaves normally
+      const pm5 = new ProfileManager();
+      pm5.config.activeSlot = 1;
+      pm5.config.profiles[0].email = 'happy1@gmail.com';
+      pm5.config.profiles[0].savedAt = new Date().toISOString();
+      pm5.config.profiles[0].status = 'active';
+
+      pm5.config.profiles[1].email = 'happy2@gmail.com';
+      pm5.config.profiles[1].savedAt = new Date().toISOString();
+      pm5.config.profiles[1].status = 'standby';
+
+      const mockStore5 = new ProfileSecretStorage({
+        secrets: { store: async () => {}, get: async () => null, delete: async () => {} }
+      });
+      pm5.secretStore = mockStore5;
+      await mockStore5.storeTokens(1, { accessToken: 'h1' }, slot1Auth);
+      await mockStore5.storeTokens(2, { accessToken: 'h2' }, slot2Auth);
+
+      let happyTargetImported = false;
+      vscdbHelper.exportVscdbAuth = async () => {
+        if (!happyTargetImported) return slot1Auth;
+        return slot2Auth;
+      };
+      vscdbHelper.importVscdbAuth = async (data) => {
+        if (data && data['antigravityUnifiedStateSync.oauthToken'] === slot2Auth['antigravityUnifiedStateSync.oauthToken']) {
+          happyTargetImported = true;
+        }
+        return true;
+      };
+
+      const happyRes = await pm5.switchToSlot(2, null, { noReload: true });
+      report('unit', 'Successful switch behaves normally',
+        happyRes.success === true &&
+        pm5.config.activeSlot === 2 &&
+        pm5.config.profiles[1].status === 'active' &&
+        pm5.config.profiles[0].status === 'standby'
+      );
+
+    } finally {
+      vscdbHelper.importVscdbAuth = origImport;
+      vscdbHelper.exportVscdbAuth = origExport;
+    }
+  } catch (err) {
+    report('unit', 'Account-State Correctness Test Suite', false, err.message);
   }
 } // end if (shouldRunUnit)
 
