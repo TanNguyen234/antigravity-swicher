@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} data:; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}';">
   <title>Antigravity Account Center</title>
   <link rel="stylesheet" href="{{cssUri}}">
 </head>
@@ -18,7 +19,7 @@
       </div>
       <div class="brand-text">
         <div class="brand-title">ANTIGRAVITY ACCOUNTS</div>
-        <div class="brand-subtitle">Multi-Slot Zero-Reload Switcher</div>
+        <div class="brand-subtitle">Multi-Account Switcher</div>
       </div>
     </div>
     <div class="header-actions">
@@ -41,7 +42,7 @@
     <div class="shortcut-content">
       <span>Xoay nhanh tài khoản kế tiếp:</span>
       <span class="keycaps-wrap">
-        <kbd class="keycap">Ctrl</kbd>
+        <kbd class="keycap" id="keyModifier">Ctrl</kbd>
         <span class="key-plus">+</span>
         <kbd class="keycap">Alt</kbd>
         <span class="key-plus">+</span>
@@ -50,7 +51,7 @@
     </div>
   </div>
 
-  <!-- Realtime Stepper Visualizer (Hiển thị khi đang Hot-Switch) -->
+  <!-- Realtime Stepper Visualizer -->
   <div class="switching-stepper-container" id="switchingStepper" style="display: none;">
     <div class="stepper-header">
       <div class="stepper-title">
@@ -86,8 +87,8 @@
   <!-- Section: Danh sách Slots -->
   <div class="section-headline">
     <div class="headline-left">
-      <span class="headline-title">3 TÀI KHOẢN GOOGLE</span>
-      <span class="slot-count-badge">3 Slots</span>
+      <span class="headline-title" id="headlineSlotCount">3 TÀI KHOẢN GOOGLE</span>
+      <span class="slot-count-badge" id="badgeSlotCount">3 Slots</span>
     </div>
     <div class="headline-status" id="activeSlotIndicator">
       <span class="status-indicator-dot"></span>
@@ -95,7 +96,7 @@
     </div>
   </div>
 
-  <!-- Bento Grid chứa 3 Thẻ Profile -->
+  <!-- Bento Grid chứa các Thẻ Profile -->
   <div class="accounts-grid" id="accountsGrid">
     <!-- Render động bởi dashboard.js -->
   </div>
@@ -167,12 +168,12 @@
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
       <span>Đăng xuất phiên</span>
     </button>
-    <button class="btn btn-danger-outline btn-action" id="btnSimulateLow" title="Kích hoạt kiểm thử tính năng Auto-Switch khi Quota chạm ngưỡng cạn">
+    <button class="btn btn-danger-outline btn-action" id="btnSimulateLow" style="display: none;" title="Kích hoạt kiểm thử tính năng Auto-Switch khi Quota chạm ngưỡng cạn">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
       <span>Test Auto-Switch (Quota 8%)</span>
     </button>
   </div>
 
-  <script src="{{jsUri}}"></script>
+  <script nonce="{{nonce}}" src="{{jsUri}}"></script>
 </body>
 </html>

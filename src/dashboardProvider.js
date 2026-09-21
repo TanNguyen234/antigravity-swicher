@@ -1,6 +1,12 @@
-const vscode = require('vscode');
+let vscode;
+try {
+  vscode = require('vscode');
+} catch (e) {
+  vscode = null;
+}
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 let activeWebviews = new Set();
 let currentPanel = undefined;
@@ -10,18 +16,25 @@ function getHtmlContent(extensionUri, webview) {
   const cssPath = path.join(extensionUri.fsPath, 'media', 'dashboard.css');
   const jsPath = path.join(extensionUri.fsPath, 'media', 'dashboard.js');
 
-  const cssUri = webview.asWebviewUri(vscode.Uri.file(cssPath));
-  const jsUri = webview.asWebviewUri(vscode.Uri.file(jsPath));
+  const cssUri = webview.asWebviewUri(vscode ? vscode.Uri.file(cssPath) : { toString: () => cssPath });
+  const jsUri = webview.asWebviewUri(vscode ? vscode.Uri.file(jsPath) : { toString: () => jsPath });
+  const nonce = crypto.randomBytes(16).toString('base64');
+  const cspSource = webview.cspSource;
 
   let html = fs.readFileSync(htmlPath, 'utf8');
-  html = html.replace('{{cssUri}}', cssUri.toString());
-  html = html.replace('{{jsUri}}', jsUri.toString());
+  html = html.replace(/\{\{cssUri\}\}/g, cssUri.toString());
+  html = html.replace(/\{\{jsUri\}\}/g, jsUri.toString());
+  html = html.replace(/\{\{nonce\}\}/g, nonce);
+  html = html.replace(/\{\{cspSource\}\}/g, cspSource);
 
   return html;
 }
 
-async function broadcastUpdate(profileManager) {
-  await profileManager.syncCurrentLiveQuota();
+async function broadcastUpdate(profileManager, options = {}) {
+  const syncLive = options.syncLive !== false;
+  if (syncLive) {
+    await profileManager.syncCurrentLiveQuota();
+  }
 
   const profiles = profileManager.getAllProfiles();
   const profilesWithExpiry = await Promise.all(profiles.map(async p => {
@@ -35,12 +48,35 @@ async function broadcastUpdate(profileManager) {
     };
   }));
 
+  let criticalThreshold = 10;
+  let warningThreshold = 15;
+  let isDevelopment = false;
+  try {
+    if (vscode && vscode.workspace) {
+      const cfg = vscode.workspace.getConfiguration('antigravitySafeSwitcher');
+      criticalThreshold = cfg.get('criticalThreshold', 10);
+      warningThreshold = cfg.get('warningThreshold', 15);
+      isDevelopment = Boolean(cfg.get('enableDevTools', false));
+    }
+  } catch (e) {}
+
+  if (process.env.VSCODE_DEBUG_MODE || process.env.NODE_ENV === 'development') {
+    isDevelopment = true;
+  }
+
+  const cfg = profileManager.config || (typeof profileManager.getConfig === 'function' ? profileManager.getConfig() : {});
   const data = {
-    activeSlot: profileManager.config.activeSlot,
+    activeSlot: cfg.activeSlot || 1,
     profiles: profilesWithExpiry,
-    totalTokensToday: profileManager.config.totalTokensToday || 0,
-    estimatedSavingsUSD: profileManager.config.estimatedSavingsUSD || 0,
-    hourlyUsage: profileManager.config.hourlyUsage || []
+    totalTokensToday: cfg.totalTokensToday || 0,
+    estimatedSavingsUSD: cfg.estimatedSavingsUSD || 0,
+    hourlyUsage: cfg.hourlyUsage || [],
+    thresholds: {
+      critical: criticalThreshold,
+      warning: warningThreshold
+    },
+    platform: process.platform,
+    isDevelopment: isDevelopment
   };
 
   activeWebviews.forEach(wv => {
@@ -59,6 +95,21 @@ function broadcastSwitchingProgress(slot, step, message) {
         type: 'switchingProgress',
         slot: slot,
         step: step,
+        message: message
+      });
+    } catch (e) {
+      activeWebviews.delete(wv);
+    }
+  });
+}
+
+function broadcastSwitchResult(slot, success, message) {
+  activeWebviews.forEach(wv => {
+    try {
+      wv.postMessage({
+        type: 'switchResult',
+        slot: slot,
+        success: success,
         message: message
       });
     } catch (e) {
@@ -119,10 +170,13 @@ function setupWebviewHandlers(webview, extensionUri, profileManager) {
           const res = await profileManager.switchToSlot(data.slot, (step, message) => {
             broadcastSwitchingProgress(data.slot, step, message);
           });
-          if (!res.success && res.message) {
-            vscode.window.showWarningMessage(res.message);
+          broadcastSwitchResult(data.slot, res.success === true, res.message);
+          if (!res.success) {
+            if (res.message) {
+              vscode.window.showWarningMessage(res.message);
+            }
+            await broadcastUpdate(profileManager, { syncLive: false });
           }
-          await broadcastUpdate(profileManager);
         }
         break;
 
@@ -168,7 +222,12 @@ function setupWebviewHandlers(webview, extensionUri, profileManager) {
             const res = await profileManager.deleteProfile(data.slot);
             if (res.success) {
               vscode.window.showInformationMessage(res.message);
-              await broadcastUpdate(profileManager);
+              await broadcastUpdate(profileManager, { syncLive: false });
+              if (res.reloadRequired) {
+                setTimeout(() => {
+                  vscode.commands.executeCommand('workbench.action.reloadWindow');
+                }, 350);
+              }
             } else {
               vscode.window.showErrorMessage(res.message);
             }
@@ -198,16 +257,25 @@ function setupWebviewHandlers(webview, extensionUri, profileManager) {
         vscode.commands.executeCommand('antigravity-safe-switcher.backupProfiles');
         break;
 
-      case 'simulateLow':
-        const active = profileManager.getActiveProfile();
-        active.flashQuota = 8;
-        active.proQuota = 5;
-        await broadcastUpdate(profileManager);
-        vscode.window.showInformationMessage(`[Test] Đã giả lập ${active.name} còn 8% quota.`);
-        setTimeout(async () => {
-          await profileManager.checkAndAutoSwitch();
-        }, 800);
+      case 'simulateLow': {
+        let isDev = Boolean(process.env.VSCODE_DEBUG_MODE || process.env.NODE_ENV === 'development');
+        try {
+          const cfg = vscode.workspace.getConfiguration('antigravitySafeSwitcher');
+          if (cfg.get('enableDevTools', false)) isDev = true;
+        } catch (e) {}
+
+        if (isDev) {
+          const active = profileManager.getActiveProfile();
+          active.flashQuota = 8;
+          active.proQuota = 5;
+          await broadcastUpdate(profileManager, { syncLive: false });
+          vscode.window.showInformationMessage(`[Test] Đã giả lập ${active.name} còn 8% quota.`);
+          setTimeout(async () => {
+            await profileManager.checkAndAutoSwitch();
+          }, 800);
+        }
         break;
+      }
     }
   });
 }
@@ -271,8 +339,8 @@ class DashboardViewProvider {
     }, 200);
   }
 
-  updateDashboard() {
-    broadcastUpdate(this._profileManager);
+  updateDashboard(options = {}) {
+    broadcastUpdate(this._profileManager, options);
   }
 }
 

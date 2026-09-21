@@ -53,7 +53,7 @@ async function activate(context) {
   statusBarItem.show();
 
   // 5. Đăng ký các Commands
-  // 5.1 Command: Chọn nhanh Profile từ menu QuickPick (Zero-Reload)
+  // 5.1 Command: Chọn nhanh Profile từ menu QuickPick
   context.subscriptions.push(
     vscode.commands.registerCommand('antigravity-safe-switcher.switchProfile', async () => {
       await profileManager.syncCurrentLiveQuota();
@@ -64,11 +64,15 @@ async function activate(context) {
         const isCurrent = (p.slot === active.slot);
         const isConfigured = Boolean(p.savedAt && p.email);
 
+        const fH = typeof p.fiveHourQuota === 'number' ? `${p.fiveHourQuota}%` : (typeof p.flashQuota === 'number' ? `${p.flashQuota}%` : '—');
+        const wK = typeof p.weeklyQuota === 'number' ? `${p.weeklyQuota}%` : (typeof p.proQuota === 'number' ? `${p.proQuota}%` : '—');
+        const cL = typeof p.claudeQuota === 'number' ? `${p.claudeQuota}%` : '—';
+
         return {
           label: `${isCurrent ? '$(check) ' : ''}Slot ${p.slot}: ${p.name}`,
           description: isConfigured ? `${p.email} (${p.tier || 'Google AI'})` : '(Slot Trống - Chưa liên kết)',
           detail: isConfigured 
-            ? `Flash: ${p.flashQuota}% | Pro: ${p.proQuota}% | Claude: ${p.claudeQuota}%` 
+            ? `5h: ${fH} | Tuần: ${wK} | Claude/Đối tác: ${cL}` 
             : 'Click để đăng nhập hoặc gán tài khoản vào slot này',
           slot: p.slot,
           isConfigured: isConfigured
@@ -83,11 +87,16 @@ async function activate(context) {
         if (!selected.isConfigured) {
           // Hỏi người dùng muốn đăng nhập mới hay gán phiên
           await profileManager.loginNewToSlot(selected.slot);
+          updateStatusBar();
+          if (dashboardProvider) dashboardProvider.updateDashboard();
         } else {
-          await profileManager.switchToSlot(selected.slot);
+          const res = await profileManager.switchToSlot(selected.slot);
+          if (!res || !res.success) {
+            updateStatusBar();
+            if (dashboardProvider) dashboardProvider.updateDashboard({ syncLive: false });
+          }
+          // Khi thành công, IDE sẽ reloadWindow. KHÔNG gọi syncCurrentLiveQuota trước reload.
         }
-        updateStatusBar();
-        if (dashboardProvider) dashboardProvider.updateDashboard();
       }
     })
   );
@@ -152,7 +161,12 @@ async function activate(context) {
         if (res.success) {
           vscode.window.showInformationMessage(res.message);
           updateStatusBar();
-          if (dashboardProvider) dashboardProvider.updateDashboard();
+          if (dashboardProvider) dashboardProvider.updateDashboard({ syncLive: false });
+          if (res.reloadRequired) {
+            setTimeout(() => {
+              vscode.commands.executeCommand('workbench.action.reloadWindow');
+            }, 350);
+          }
         } else {
           vscode.window.showErrorMessage(res.message);
         }
@@ -160,12 +174,15 @@ async function activate(context) {
     })
   );
 
-  // 5.3 Command: Xoay vòng tài khoản nhanh (Ctrl+Alt+S) - ZERO RELOAD
+  // 5.3 Command: Xoay vòng tài khoản nhanh (Ctrl+Alt+S / Cmd+Alt+S)
   context.subscriptions.push(
     vscode.commands.registerCommand('antigravity-safe-switcher.fastSwap', async () => {
-      await profileManager.fastSwapNext();
-      updateStatusBar();
-      if (dashboardProvider) dashboardProvider.updateDashboard();
+      const res = await profileManager.fastSwapNext();
+      if (!res || !res.success) {
+        updateStatusBar();
+        if (dashboardProvider) dashboardProvider.updateDashboard({ syncLive: false });
+      }
+      // Khi thành công, IDE sẽ reloadWindow. KHÔNG gọi syncCurrentLiveQuota trước reload.
     })
   );
 
@@ -281,17 +298,37 @@ function updateStatusBar() {
     return;
   }
 
-  const fiveH = active.fiveHourQuota !== undefined ? `${active.fiveHourQuota}%` : `${active.flashQuota || 0}%`;
-  const weekly = active.weeklyQuota !== undefined ? `${active.weeklyQuota}%` : 'N/A';
+  const fiveH = typeof active.fiveHourQuota === 'number'
+    ? `${active.fiveHourQuota}%`
+    : (typeof active.flashQuota === 'number' ? `${active.flashQuota}%` : '—');
+  const weekly = typeof active.weeklyQuota === 'number'
+    ? `${active.weeklyQuota}%`
+    : (typeof active.proQuota === 'number' ? `${active.proQuota}%` : '—');
+  const claude = typeof active.claudeQuota === 'number' ? `${active.claudeQuota}%` : '—';
+  const credits = (active.promptCredits !== undefined && active.promptCredits !== null) ? active.promptCredits : '—';
 
   statusBarItem.text = `$(account) ${active.name.split(' ')[0]} [5h: ${fiveH} | Wk: ${weekly}]`;
-  statusBarItem.tooltip = `${active.name} (${active.email})\nGói: ${active.tier || 'Google AI Pro'} (${active.planName || 'Pro'})\nHạn mức 5 Giờ: ${fiveH}\nHạn mức Tuần: ${weekly}\nClaude / GPT: ${active.claudeQuota || 100}%\nCredits: ${active.promptCredits ?? 500} Prompt Credits\nClick để chuyển đổi tài khoản (Tự động bảo toàn Tab)`;
+  statusBarItem.tooltip = `${active.name} (${active.email})\nGói: ${active.tier || 'Google AI'} (${active.planName || 'Pro'})\nHạn mức 5 Giờ: ${fiveH}\nHạn mức Tuần: ${weekly}\nClaude / Đối tác: ${claude}\nCredits: ${credits} Prompt Credits\nClick để chuyển đổi tài khoản (Tự động bảo toàn Tab)`;
 
-  const mainQuota = active.fiveHourQuota !== undefined ? active.fiveHourQuota : (active.flashQuota || 100);
-  if (mainQuota <= 10) {
+  let critThreshold = 10;
+  let warnThreshold = 15;
+  try {
+    const cfg = vscode.workspace.getConfiguration('antigravitySafeSwitcher');
+    critThreshold = cfg.get('criticalThreshold', 10);
+    warnThreshold = cfg.get('warningThreshold', 15);
+  } catch (e) {}
+
+  const mainQuota = typeof active.fiveHourQuota === 'number'
+    ? active.fiveHourQuota
+    : (typeof active.flashQuota === 'number' ? active.flashQuota : null);
+
+  if (mainQuota === null) {
+    statusBarItem.color = '#8b949e';
+    statusBarItem.backgroundColor = undefined;
+  } else if (mainQuota <= critThreshold) {
     statusBarItem.color = '#f85149';
     statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-  } else if (mainQuota <= 20) {
+  } else if (mainQuota <= warnThreshold) {
     statusBarItem.color = '#d29922';
     statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
   } else {

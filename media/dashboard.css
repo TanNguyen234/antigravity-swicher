@@ -587,6 +587,7 @@ body {
 .fill-emerald { background: linear-gradient(90deg, #10b981, #34d399); }
 .fill-amber { background: linear-gradient(90deg, #d97706, #f59e0b); }
 .fill-rose { background: linear-gradient(90deg, #dc2626, #f87171); }
+.fill-neutral { background: rgba(255, 255, 255, 0.15); }
 
 .quota-sub-meta {
   display: flex;
