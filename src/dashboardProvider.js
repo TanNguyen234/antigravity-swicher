@@ -67,10 +67,10 @@ async function broadcastUpdate(profileManager, options = {}) {
   const cfg = profileManager.config || (typeof profileManager.getConfig === 'function' ? profileManager.getConfig() : {});
   const data = {
     activeSlot: cfg.activeSlot || 1,
+    sessionAuthenticated: Boolean(profileManager.sessionAuthenticated),
+    currentSessionEmail: profileManager.currentSessionEmail || null,
+    lastSyncedAt: profileManager.lastSyncedAt || cfg.lastSyncedAt || null,
     profiles: profilesWithExpiry,
-    totalTokensToday: cfg.totalTokensToday || 0,
-    estimatedSavingsUSD: cfg.estimatedSavingsUSD || 0,
-    hourlyUsage: cfg.hourlyUsage || [],
     thresholds: {
       critical: criticalThreshold,
       warning: warningThreshold
@@ -247,8 +247,13 @@ function setupWebviewHandlers(webview, extensionUri, profileManager) {
           'Hủy'
         );
         if (choice === 'Đăng xuất') {
-          await profileManager.logoutCurrent();
-          await broadcastUpdate(profileManager);
+          const res = await profileManager.logoutCurrent();
+          if (res && res.success === false) {
+            vscode.window.showErrorMessage(`Lỗi đăng xuất: ${res.message || 'Thao tác không thành công'}`);
+          } else {
+            vscode.window.showInformationMessage('Đã đăng xuất phiên làm việc.');
+          }
+          await broadcastUpdate(profileManager, { syncLive: false });
         }
         break;
       }

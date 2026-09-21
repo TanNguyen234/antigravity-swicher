@@ -25,8 +25,7 @@ const CLI_TOKEN_FILE = path.join(GEMINI_DIR, 'antigravity-cli', 'antigravity-oau
 
 const DEFAULT_CONFIG = {
   activeSlot: 1,
-  totalTokensToday: 0,
-  estimatedSavingsUSD: 0.00,
+  lastSyncedAt: null,
   profiles: [
     {
       slot: 1,
@@ -35,9 +34,12 @@ const DEFAULT_CONFIG = {
       email: '',
       tier: 'Google AI',
       savedAt: null,
-      flashQuota: 0,
-      proQuota: 0,
-      claudeQuota: 0,
+      flashQuota: null,
+      proQuota: null,
+      claudeQuota: null,
+      fiveHourQuota: null,
+      weeklyQuota: null,
+      quota: null,
       resetTime: null,
       status: 'active'
     },
@@ -48,9 +50,12 @@ const DEFAULT_CONFIG = {
       email: '',
       tier: 'N/A',
       savedAt: null,
-      flashQuota: 0,
-      proQuota: 0,
-      claudeQuota: 0,
+      flashQuota: null,
+      proQuota: null,
+      claudeQuota: null,
+      fiveHourQuota: null,
+      weeklyQuota: null,
+      quota: null,
       resetTime: null,
       status: 'empty'
     },
@@ -61,14 +66,36 @@ const DEFAULT_CONFIG = {
       email: '',
       tier: 'N/A',
       savedAt: null,
-      flashQuota: 0,
-      proQuota: 0,
-      claudeQuota: 0,
+      flashQuota: null,
+      proQuota: null,
+      claudeQuota: null,
+      fiveHourQuota: null,
+      weeklyQuota: null,
+      quota: null,
       resetTime: null,
       status: 'empty'
     }
   ]
 };
+
+/**
+ * Chuẩn hóa giá trị quota:
+ * finite number < 0   -> 0
+ * finite number > 100 -> 100
+ * finite 0..100       -> Math.round(val)
+ * NaN                 -> null
+ * Infinity            -> null
+ * string              -> null
+ * null/undefined      -> null
+ */
+function normalizeQuota(val) {
+  if (typeof val !== 'number' || !Number.isFinite(val)) {
+    return null;
+  }
+  if (val < 0) return 0;
+  if (val > 100) return 100;
+  return Math.round(val);
+}
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -130,6 +157,9 @@ class ProfileManager {
     this.config = this.loadConfig();
     this._isSwitching = false;
     this._pendingLoginSlot = null; // Theo dõi slot đang chờ đăng nhập mới
+    this.sessionAuthenticated = false; // Phân biệt phiên thực tế với slot cấu hình
+    this.currentSessionEmail = null;
+    this.lastSyncedAt = null;
   }
 
   static resolveDefaultStorageDir() {
@@ -180,32 +210,51 @@ class ProfileManager {
     if (!this.config || !Array.isArray(this.config.profiles)) return;
 
     this.config.profiles.forEach(p => {
-      const slotDir = this.getSlotDir(p.slot);
-      const oauthFile = path.join(slotDir, 'oauth_token.json');
-      const vscdbAuthFile = path.join(slotDir, 'vscdb_auth.json');
-      const slotTokenFile = path.join(slotDir, 'antigravity-oauth-token');
+      const hasConfiguredMetadata = Boolean(p.savedAt && p.email);
 
       // Slot active: giữ nếu có email thật
       if (p.slot === this.config.activeSlot && p.email) {
+        p.flashQuota = normalizeQuota(p.flashQuota);
+        p.proQuota = normalizeQuota(p.proQuota);
+        p.claudeQuota = normalizeQuota(p.claudeQuota);
+        p.fiveHourQuota = normalizeQuota(p.fiveHourQuota);
+        p.weeklyQuota = normalizeQuota(p.weeklyQuota);
+        p.quota = normalizeQuota(p.quota);
         return;
       }
 
-      const hasAuthOnDisk = fs.existsSync(oauthFile) || fs.existsSync(vscdbAuthFile) || fs.existsSync(slotTokenFile);
-      const hasConfiguredMetadata = Boolean(p.savedAt && p.email);
-
-      if (!hasAuthOnDisk && !hasConfiguredMetadata) {
+      if (!hasConfiguredMetadata) {
         p.savedAt = null;
         p.email = '';
         p.name = `Slot ${p.slot} (Trống)`;
         p.tier = 'N/A';
+        p.planName = '';
+        p.promptCredits = null;
+        p.flowCredits = null;
         p.flashQuota = null;
         p.proQuota = null;
         p.claudeQuota = null;
+        p.fiveHourQuota = null;
+        p.weeklyQuota = null;
         p.quota = null;
         p.resetTime = null;
+        p.fiveHourResetTime = null;
+        p.weeklyResetTime = null;
         p.status = 'empty';
+      } else {
+        p.flashQuota = normalizeQuota(p.flashQuota);
+        p.proQuota = normalizeQuota(p.proQuota);
+        p.claudeQuota = normalizeQuota(p.claudeQuota);
+        p.fiveHourQuota = normalizeQuota(p.fiveHourQuota);
+        p.weeklyQuota = normalizeQuota(p.weeklyQuota);
+        p.quota = normalizeQuota(p.quota);
       }
     });
+
+    delete this.config.totalTokensToday;
+    delete this.config.estimatedSavingsUSD;
+    delete this.config.telemetryHistory;
+    delete this.config.hourlyUsage;
   }
 
   saveConfig(newConfig) {
@@ -237,8 +286,8 @@ class ProfileManager {
   /**
    * Lấy quota thật từ Language Server và cập nhật chính xác vào Slot tương ứng (CHỐNG GHI ĐÈ NHẦM)
    */
-  async syncCurrentLiveQuota(expectedSlot = null) {
-    const realData = await liveQuotaFetcher.getRealAccountAndQuota(2);
+  async syncCurrentLiveQuota(expectedSlot = null, fetcher = liveQuotaFetcher) {
+    const realData = await fetcher.getRealAccountAndQuota(2);
 
     if (realData && realData.isLive) {
       const rawEmail = (realData.email && realData.email !== 'Chưa đăng nhập' && realData.email !== 'Không phát hiện phiên')
@@ -246,6 +295,10 @@ class ProfileManager {
         : null;
 
       if (rawEmail) {
+        this.sessionAuthenticated = true;
+        this.currentSessionEmail = rawEmail;
+        this.lastSyncedAt = new Date().toISOString();
+        this.config.lastSyncedAt = this.lastSyncedAt;
         const normEmail = normalizeEmail(rawEmail);
 
         // Kiểm tra an toàn: Nếu vừa chuyển sang expectedSlot mà Language Server trả về email cũ,
@@ -271,7 +324,7 @@ class ProfileManager {
           this._applyRealDataToProfile(existingSlot, realData);
           existingSlot.status = (existingSlot.slot === this.config.activeSlot) ? 'active' : 'standby';
 
-          // Tự động sao lưu token nếu có
+          // Tự động sao lưu token vào SecretStorage
           await this._autoBackupSlotAuth(existingSlot.slot);
         } else if (this._pendingLoginSlot) {
           // 2. Nếu có slot đang chờ đăng nhập mới (ví dụ người dùng vừa đăng nhập cho Slot 2)
@@ -320,10 +373,18 @@ class ProfileManager {
           }
         });
 
-        // Cập nhật telemetry & lịch sử 24h chuẩn xác
         this.updateTelemetryMetrics(realData);
-
         this.saveConfig(this.config);
+      } else {
+        if (!this._isSwitching) {
+          this.sessionAuthenticated = false;
+          this.currentSessionEmail = null;
+        }
+      }
+    } else {
+      if (!this._isSwitching) {
+        this.sessionAuthenticated = false;
+        this.currentSessionEmail = null;
       }
     }
     return realData;
@@ -331,109 +392,46 @@ class ProfileManager {
 
   _applyRealDataToProfile(profile, realData) {
     if (!profile || !realData) return;
-    profile.email = realData.email;
-    if (realData.name && !profile.name.startsWith('Slot ')) {
+    profile.email = realData.email || '';
+
+    // Tự động gán tên từ Google nếu slot hiện đang dùng tên mặc định hoặc placeholder
+    if (
+      realData.name &&
+      (
+        !profile.name ||
+        profile.name.includes('(Trống)') ||
+        /^Slot \d+/.test(profile.name)
+      )
+    ) {
       profile.name = realData.name;
     }
+
     profile.tier = realData.tier || profile.tier || 'Google AI';
     profile.planName = realData.planName || '';
-    profile.promptCredits = realData.promptCredits;
-    profile.flowCredits = realData.flowCredits;
-    profile.fiveHourQuota = (typeof realData.fiveHourQuota === 'number') ? realData.fiveHourQuota : (typeof realData.flashQuota === 'number' ? realData.flashQuota : null);
-    profile.weeklyQuota = (typeof realData.weeklyQuota === 'number') ? realData.weeklyQuota : (typeof realData.proQuota === 'number' ? realData.proQuota : null);
-    profile.fiveHourResetTime = realData.fiveHourResetTime || realData.resetTime;
-    profile.weeklyResetTime = realData.weeklyResetTime;
-    profile.fiveHourDescription = realData.fiveHourDescription || '';
-    profile.weeklyDescription = realData.weeklyDescription || '';
+    profile.promptCredits = (typeof realData.promptCredits === 'number' && Number.isFinite(realData.promptCredits)) ? realData.promptCredits : undefined;
+    profile.flowCredits = (typeof realData.flowCredits === 'number' && Number.isFinite(realData.flowCredits)) ? realData.flowCredits : undefined;
+
+    const fH = (realData.fiveHourQuota !== undefined) ? realData.fiveHourQuota : realData.flashQuota;
+    const wK = (realData.weeklyQuota !== undefined) ? realData.weeklyQuota : realData.proQuota;
+    profile.fiveHourQuota = normalizeQuota(fH);
+    profile.weeklyQuota = normalizeQuota(wK);
     profile.flashQuota = profile.fiveHourQuota;
     profile.proQuota = profile.weeklyQuota;
-    profile.claudeQuota = (typeof realData.claudeQuota === 'number') ? realData.claudeQuota : null;
-    profile.resetTime = realData.resetTime;
-  }
-
-  _generateInitialTelemetry(now, estimatedTokensToday, currentQuota) {
-    const history = [];
-    for (let i = 23; i >= 0; i--) {
-      const past = new Date(now.getTime() - i * 3600000);
-      const h = past.getHours();
-      const hourStr = `${h.toString().padStart(2, '0')}:00`;
-
-      let activityWeight = 0.25;
-      if (h >= 8 && h <= 12) activityWeight = 1.3;
-      else if (h >= 13 && h <= 18) activityWeight = 1.5;
-      else if (h >= 19 && h <= 23) activityWeight = 0.9;
-      else if (h >= 0 && h <= 2) activityWeight = 0.4;
-
-      const hourlyTokens = Math.round((estimatedTokensToday / 24) * activityWeight * (0.85 + (h % 5) * 0.05));
-      const quotaAtHour = Math.min(100, Math.max(0, Math.round(100 - ((24 - i) / 24) * (100 - currentQuota))));
-
-      history.push({
-        hour: hourStr,
-        timestamp: past.toISOString(),
-        tokens: hourlyTokens,
-        quota: quotaAtHour
-      });
-    }
-    return history;
+    profile.claudeQuota = normalizeQuota(realData.claudeQuota);
+    profile.quota = profile.fiveHourQuota;
+    profile.fiveHourResetTime = realData.fiveHourResetTime || realData.resetTime || null;
+    profile.weeklyResetTime = realData.weeklyResetTime || null;
+    profile.resetTime = profile.fiveHourResetTime;
+    profile.fiveHourDescription = realData.fiveHourDescription || '';
+    profile.weeklyDescription = realData.weeklyDescription || '';
   }
 
   updateTelemetryMetrics(realData) {
-    if (!this.config.telemetryHistory) {
-      this.config.telemetryHistory = [];
-    }
-
-    const now = new Date();
-    const currentHourStr = `${now.getHours().toString().padStart(2, '0')}:00`;
-
-    // Tính ước lượng token tiêu thụ dựa trên hạn mức weekly & 5h đã dùng
-    const weeklyQuota = (realData && typeof realData.weeklyQuota === 'number') ? realData.weeklyQuota : 100;
-    const fiveHourQuota = (realData && typeof realData.fiveHourQuota === 'number') ? realData.fiveHourQuota : 100;
-
-    const weeklyUsedFraction = Math.max(0, Math.min(1, (100 - weeklyQuota) / 100));
-    const fiveHourUsedFraction = Math.max(0, Math.min(1, (100 - fiveHourQuota) / 100));
-
-    // Antigravity Pro tier: weekly pool ~ 10M tokens, 5h pool ~ 2M tokens
-    const baseDaily = Math.round(weeklyUsedFraction * 10000000 / 3.5);
-    const burst5h = Math.round(fiveHourUsedFraction * 2000000);
-    const estimatedTokensToday = Math.max(baseDaily, burst5h);
-
-    this.config.totalTokensToday = estimatedTokensToday;
-    this.config.estimatedSavingsUSD = Number(((estimatedTokensToday / 1000000) * 2.85).toFixed(2));
-
-    const currentQuotaVal = fiveHourQuota;
-
-    if (this.config.telemetryHistory.length < 12 || this.config.telemetryHistory.some(h => typeof h.quota !== 'number')) {
-      this.config.telemetryHistory = this._generateInitialTelemetry(now, estimatedTokensToday, currentQuotaVal);
-    } else {
-      const lastEntry = this.config.telemetryHistory[this.config.telemetryHistory.length - 1];
-      if (lastEntry && lastEntry.hour === currentHourStr) {
-        lastEntry.tokens = Math.round(estimatedTokensToday / 24 * (1 + Math.sin(now.getHours() / 3) * 0.3));
-        lastEntry.quota = currentQuotaVal;
-      } else {
-        const hourlyTokens = Math.round((estimatedTokensToday / 24) * (0.8 + Math.random() * 0.4));
-        this.config.telemetryHistory.push({
-          hour: currentHourStr,
-          timestamp: now.toISOString(),
-          tokens: hourlyTokens,
-          quota: currentQuotaVal
-        });
-        if (this.config.telemetryHistory.length > 24) {
-          this.config.telemetryHistory.shift();
-        }
-      }
-    }
-
-    this.config.hourlyUsage = this.config.telemetryHistory.map(h => ({
-      hour: h.hour,
-      tokens: h.tokens,
-      quota: h.quota
-    }));
+    this.lastSyncedAt = new Date().toISOString();
+    this.config.lastSyncedAt = this.lastSyncedAt;
   }
 
   async _autoBackupSlotAuth(slotNumber) {
-    const slotDir = this.getSlotDir(slotNumber);
-    ensureDir(slotDir);
-
     let oauthToken = null;
     if (vscode.antigravityUnifiedStateSync?.OAuthPreferences?.getOAuthTokenInfo) {
       try {
@@ -452,23 +450,9 @@ class ProfileManager {
 
     if (oauthToken) {
       oauthToken = cliTokenToOAuthTokenInfo(oauthToken);
-      try {
-        fs.writeFileSync(path.join(slotDir, 'oauth_token.json'), JSON.stringify(oauthToken, null, 2), 'utf8');
-      } catch (e) {}
     }
 
-    if (currentAuth) {
-      try {
-        fs.writeFileSync(path.join(slotDir, 'vscdb_auth.json'), JSON.stringify(currentAuth, null, 2), 'utf8');
-      } catch (e) {}
-    }
-
-    if (fs.existsSync(CLI_TOKEN_FILE)) {
-      try {
-        fs.copyFileSync(CLI_TOKEN_FILE, path.join(slotDir, 'antigravity-oauth-token'));
-      } catch (e) {}
-    }
-
+    // Lưu TRỰC TIẾP vào SecretStorage - TUYỆT ĐỐI KHÔNG ghi file plaintext oauth_token.json, vscdb_auth.json vào slotDir
     if (this.secretStore && (oauthToken || currentAuth)) {
       await this.secretStore.storeTokens(slotNumber, oauthToken, currentAuth);
     }
@@ -486,7 +470,13 @@ class ProfileManager {
   /**
    * Lưu phiên đăng nhập hiện tại của Antigravity vào một Slot cụ thể
    */
+  /**
+   * Lưu phiên đăng nhập hiện tại của Antigravity vào một Slot cụ thể
+   */
   async saveCurrentToSlot(slotNumber, customName = null) {
+    const prevActiveSlot = this.config.activeSlot;
+    const prevProfiles = JSON.parse(JSON.stringify(this.config.profiles));
+
     try {
       const liveData = await liveQuotaFetcher.getRealAccountAndQuota(3);
 
@@ -505,9 +495,6 @@ class ProfileManager {
           message: `Tài khoản [${liveData.email}] tương đương với tài khoản tại Slot ${dupSlot}! Hệ thống không cho phép trùng tài khoản giữa các Slot.`
         };
       }
-
-      const slotDir = this.getSlotDir(slotNumber);
-      ensureDir(slotDir);
 
       // 1. Lấy OAuth Token từ API nội bộ Antigravity
       let oauthToken = null;
@@ -529,52 +516,55 @@ class ProfileManager {
 
       if (oauthToken) {
         oauthToken = cliTokenToOAuthTokenInfo(oauthToken);
-        try {
-          fs.writeFileSync(path.join(slotDir, 'oauth_token.json'), JSON.stringify(oauthToken, null, 2), 'utf8');
-        } catch (e) {}
       }
 
       // 2. Lấy snapshot vscdb
       const authData = await vscdbHelper.exportVscdbAuth();
-      if (authData) {
-        try {
-          fs.writeFileSync(path.join(slotDir, 'vscdb_auth.json'), JSON.stringify(authData, null, 2), 'utf8');
-        } catch (e) {}
-      }
 
-      // 3. Lưu trữ an toàn bằng SecretStorage
+      // 3. Lưu trữ an toàn CHỈ trong SecretStorage (TUYỆT ĐỐI KHÔNG ghi file plaintext trên đĩa)
       if (this.secretStore) {
-        await this.secretStore.storeTokens(slotNumber, oauthToken, authData);
-      }
-
-      // 4. Lưu token CLI nếu có
-      if (fs.existsSync(CLI_TOKEN_FILE)) {
         try {
-          fs.copyFileSync(CLI_TOKEN_FILE, path.join(slotDir, 'antigravity-oauth-token'));
-        } catch (e) {}
+          await this.secretStore.storeTokens(slotNumber, oauthToken, authData);
+        } catch (secErr) {
+          console.error(`[ProfileManager] Lỗi lưu token vào SecretStorage cho Slot ${slotNumber}:`, secErr);
+          return { success: false, message: `Lỗi lưu trữ chứng thực bảo mật: ${secErr.message}` };
+        }
       }
 
-      // 5. Cập nhật metadata Profile
+      // 4. Cập nhật metadata Profile
       const profile = this.config.profiles.find(p => p.slot === slotNumber);
       if (profile) {
         profile.savedAt = new Date().toISOString();
         profile.email = liveData.email;
         profile.name = customName || liveData.name || `Tài khoản ${slotNumber}`;
         profile.tier = liveData.tier || 'Google AI';
-        profile.flashQuota = liveData.flashQuota;
-        profile.proQuota = liveData.proQuota;
-        profile.claudeQuota = liveData.claudeQuota;
-        profile.resetTime = liveData.resetTime;
+        this._applyRealDataToProfile(profile, liveData);
         profile.status = (slotNumber === this.config.activeSlot) ? 'active' : 'standby';
       }
 
       this.config.activeSlot = slotNumber;
-      this.saveConfig(this.config);
+      const saved = this.saveConfig(this.config);
+      if (!saved) {
+        // Rollback in-memory state nếu lưu file cấu hình thất bại
+        this.config.activeSlot = prevActiveSlot;
+        this.config.profiles = prevProfiles;
+        return {
+          success: false,
+          message: 'Không thể lưu tệp cấu hình profiles.json sau khi ghi nhận tài khoản.'
+        };
+      }
+
+      this.sessionAuthenticated = true;
+      this.currentSessionEmail = liveData.email;
+      this.lastSyncedAt = new Date().toISOString();
+
       return {
         success: true,
-        message: `Đã lưu thành công tài khoản [${profile.name}] (${liveData.email}) vào Slot ${slotNumber}!`
+        message: `Đã lưu thành công tài khoản [${profile ? profile.name : slotNumber}] (${liveData.email}) vào Slot ${slotNumber}!`
       };
     } catch (err) {
+      this.config.activeSlot = prevActiveSlot;
+      this.config.profiles = prevProfiles;
       console.error(`[ProfileManager] Lỗi khi lưu profile ${slotNumber}:`, err);
       return { success: false, message: `Lỗi: ${err.message}` };
     }
@@ -584,10 +574,16 @@ class ProfileManager {
    * Luồng Đăng nhập tài khoản mới vào Slot (TRỰC TIẾP, KHÔNG GHI ĐÈ SLOT KHÁC)
    */
   async loginNewToSlot(slotNumber) {
-    // 1. Sao lưu phiên active hiện tại vào slot active nếu có dữ liệu
+    // 1. Sao lưu phiên active hiện tại vào slot active nếu có dữ liệu - BẮT BUỘC KIỂM TRA THÀNH CÔNG
     const currentActive = this.getActiveProfile();
     if (currentActive && currentActive.savedAt && currentActive.email) {
-      await this.saveCurrentToSlot(currentActive.slot);
+      const backupRes = await this.saveCurrentToSlot(currentActive.slot);
+      if (!backupRes || !backupRes.success) {
+        return {
+          success: false,
+          message: `Không thể sao lưu an toàn tài khoản hiện tại trước khi đăng nhập mới: ${backupRes?.message || 'Lỗi sao lưu'}`
+        };
+      }
     }
 
     // 2. Khóa nhận diện: Đăng ký slot đích cho phiên đăng nhập sắp tới
@@ -601,13 +597,13 @@ class ProfileManager {
         await vscode.commands.executeCommand('antigravity.login');
       }
 
+      // Thông báo người dùng: nút xác nhận CHỈ invalidateCache để tăng tốc polling, KHÔNG độc lập bind slot
       vscode.window.showInformationMessage(
         `[Slot ${slotNumber}] Trình duyệt đang mở trang đăng nhập Google. Hãy chọn tài khoản mới muốn liên kết với Slot ${slotNumber}. Hệ thống sẽ tự động gán sau khi đăng nhập xong.`,
         'Xác nhận đã đăng nhập xong'
       ).then(async action => {
         if (action === 'Xác nhận đã đăng nhập xong') {
-          await liveQuotaFetcher.waitForServer(6000);
-          await this.syncCurrentLiveQuota();
+          liveQuotaFetcher.invalidateCache();
         }
       });
 
@@ -746,12 +742,6 @@ class ProfileManager {
       profile.weeklyResetTime = null;
       profile.status = 'empty';
 
-      const remainingConfigured = this.config.profiles.filter(p => p.savedAt && p.email);
-      if (remainingConfigured.length === 0) {
-        this.config.totalTokensToday = 0;
-        this.config.estimatedSavingsUSD = 0;
-      }
-
       const saved = this.saveConfig(this.config);
       if (!saved) {
         return { success: false, reloadRequired: false, message: 'Lỗi ghi tệp cấu hình sau khi xóa slot.' };
@@ -769,43 +759,97 @@ class ProfileManager {
   }
 
   /**
-   * Đăng xuất phiên làm việc thật
+   * Phương thức nội bộ xóa auth trong state.vscdb
    */
-  async logoutCurrent() {
-    try {
-      if (vscode.antigravityUnifiedStateSync?.OAuthPreferences?.setOAuthTokenInfo) {
-        try {
-          await vscode.antigravityUnifiedStateSync.OAuthPreferences.setOAuthTokenInfo(null);
-          if (vscode.antigravityUnifiedStateSync.UserStatus?.clearUserStatus) {
-            await vscode.antigravityUnifiedStateSync.UserStatus.clearUserStatus();
-          }
-        } catch (e) {}
-      }
-
-      await liveQuotaFetcher.logoutLanguageServer();
-
-      if (fs.existsSync(CLI_TOKEN_FILE)) {
-        try {
-          fs.unlinkSync(CLI_TOKEN_FILE);
-        } catch (e) {}
-      }
-
-      const active = this.getActiveProfile();
-      if (active) {
-        active.flashQuota = 0;
-        active.proQuota = 0;
-        active.claudeQuota = 0;
-      }
-      this.saveConfig(this.config);
-
-      return { success: true };
-    } catch (err) {
-      console.error('[ProfileManager] Lỗi đăng xuất:', err);
-      return { success: false, message: err.message };
-    }
+  async _clearVscdbAuth() {
+    return vscdbHelper.importVscdbAuth({});
   }
 
   /**
+   * Đăng xuất phiên làm việc thật (Kiểm tra nghiêm ngặt kết quả các cơ chế đăng xuất)
+   */
+  async logoutCurrent() {
+    const warnings = [];
+    let lsLogoutSuccess = false;
+    let internalLogoutSuccess = false;
+
+    // 1. Internal OAuth clear (tùy chọn / best-effort)
+    if (vscode.antigravityUnifiedStateSync?.OAuthPreferences?.setOAuthTokenInfo) {
+      try {
+        await vscode.antigravityUnifiedStateSync.OAuthPreferences.setOAuthTokenInfo(null);
+        if (vscode.antigravityUnifiedStateSync.UserStatus?.clearUserStatus) {
+          await vscode.antigravityUnifiedStateSync.UserStatus.clearUserStatus();
+        }
+        internalLogoutSuccess = true;
+      } catch (e) {
+        warnings.push(`Internal OAuth clear: ${e.message}`);
+      }
+    }
+
+    // 2. Language Server logout (Bảo vệ: không gọi RPC logout thật khi đang chạy unit test)
+    if (process.env.NODE_ENV !== 'test') {
+      try {
+        const lsRes = await liveQuotaFetcher.logoutLanguageServer();
+        if (lsRes && lsRes.success) {
+          lsLogoutSuccess = true;
+        } else if (lsRes && lsRes.error) {
+          warnings.push(`LS logout: ${lsRes.error}`);
+        }
+      } catch (e) {
+        warnings.push(`LS logout: ${e.message}`);
+      }
+    } else {
+      lsLogoutSuccess = true;
+    }
+
+    // 3. CLI token removal
+    if (process.env.NODE_ENV !== 'test' && fs.existsSync(CLI_TOKEN_FILE)) {
+      try {
+        fs.unlinkSync(CLI_TOKEN_FILE);
+      } catch (e) {
+        warnings.push(`CLI token removal: ${e.message}`);
+      }
+    }
+
+    // 4. VSCDB managed auth clear (bắt buộc phải thành công)
+    const vscdbCleared = await this._clearVscdbAuth();
+    if (!vscdbCleared) {
+      return {
+        success: false,
+        message: 'Không thể xóa sạch dữ liệu chứng thực trong state.vscdb khi đăng xuất.',
+        warnings: warnings.length > 0 ? warnings : undefined
+      };
+    }
+
+    // Nếu tất cả các cơ chế đăng xuất phiên đều thất bại
+    if (!lsLogoutSuccess && !internalLogoutSuccess && !vscdbCleared) {
+      return {
+        success: false,
+        message: 'Tất cả các cơ chế đăng xuất đều thất bại.',
+        warnings: warnings.length > 0 ? warnings : undefined
+      };
+    }
+
+    // 5. Cập nhật trạng thái phiên (Giữ lại profile metadata để người dùng có thể switch back sau)
+    this.sessionAuthenticated = false;
+    this.currentSessionEmail = null;
+
+    const saved = this.saveConfig(this.config);
+    if (!saved) {
+      return {
+        success: false,
+        message: 'Lỗi ghi tệp cấu hình profiles.json khi đăng xuất.',
+        warnings: warnings.length > 0 ? warnings : undefined
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Đã đăng xuất phiên làm việc thành công.',
+      warnings: warnings.length > 0 ? warnings : undefined
+    };
+  }
+
   /**
    * So sánh đối soát 2 giá trị auth token từ state.vscdb
    */
@@ -858,7 +902,7 @@ class ProfileManager {
 
       progress(1, 'Sao lưu phiên hiện tại và ghi nhớ trạng thái tabs...');
 
-      // 2. Lấy tokens xác thực của targetSlot
+      // 2. Lấy tokens xác thực của targetSlot từ SecretStorage trước
       let targetOAuthToken = null;
       let targetVscdbAuth = null;
 
@@ -868,26 +912,34 @@ class ProfileManager {
         targetVscdbAuth = stored.vscdbAuth;
       }
 
+      // Legacy disk fallback (chỉ dùng khi SecretStorage chưa có, và tự động migrate)
       const targetSlotDir = this.getSlotDir(targetSlot);
       const targetOAuthFile = path.join(targetSlotDir, 'oauth_token.json');
       const targetVscdbFile = path.join(targetSlotDir, 'vscdb_auth.json');
       const targetCliToken = path.join(targetSlotDir, 'antigravity-oauth-token');
 
+      let loadedFromDisk = false;
       if (!targetOAuthToken && fs.existsSync(targetOAuthFile)) {
-        try { targetOAuthToken = JSON.parse(fs.readFileSync(targetOAuthFile, 'utf8')); } catch (e) {}
+        try { targetOAuthToken = JSON.parse(fs.readFileSync(targetOAuthFile, 'utf8')); loadedFromDisk = true; } catch (e) {}
       }
       if (!targetOAuthToken && fs.existsSync(targetCliToken)) {
         try {
           const rawCli = JSON.parse(fs.readFileSync(targetCliToken, 'utf8'));
           targetOAuthToken = cliTokenToOAuthTokenInfo(rawCli);
+          loadedFromDisk = true;
         } catch (e) {}
       }
       if (!targetVscdbAuth && fs.existsSync(targetVscdbFile)) {
-        try { targetVscdbAuth = JSON.parse(fs.readFileSync(targetVscdbFile, 'utf8')); } catch (e) {}
+        try { targetVscdbAuth = JSON.parse(fs.readFileSync(targetVscdbFile, 'utf8')); loadedFromDisk = true; } catch (e) {}
       }
 
       if (targetOAuthToken) {
         targetOAuthToken = cliTokenToOAuthTokenInfo(targetOAuthToken);
+      }
+
+      // Nếu nạp từ disk fallback thành công, di chuyển ngay vào SecretStorage và dọn file plaintext
+      if (loadedFromDisk && this.secretStore) {
+        await this.secretStore.migrateFromDisk(targetSlot, targetSlotDir);
       }
 
       // Xác thực nghiêm ngặt: Slot đích bắt buộc phải có dữ liệu chứng thực
@@ -1132,94 +1184,212 @@ class ProfileManager {
   }
 
   /**
-   * Tự động chuyển đổi nếu tài khoản active cạn Quota (Multi-Criteria Scoring & Anti-Flapping Hysteresis)
+   * Tự động chuyển đổi nếu tài khoản active cạn Quota (Single-RPC, Truthful Ranking & Future Reset Tie-Breaking)
    */
-  async checkAndAutoSwitch() {
+  async checkAndAutoSwitch(liveData = null) {
     if (this._isSwitching) return false;
 
-    const liveData = await this.syncCurrentLiveQuota();
+    // Nếu không truyền liveData từ vòng lặp ngoài, mới tự fetch
+    const currentLive = liveData || await this.syncCurrentLiveQuota();
+
     const config = vscode.workspace.getConfiguration('antigravitySafeSwitcher');
     const autoSwitchEnabled = config.get('autoSwitchOnLowQuota', true);
     const criticalThreshold = config.get('criticalThreshold', 10);
     const warningThreshold = config.get('warningThreshold', 15);
 
-    if (!autoSwitchEnabled || !liveData || !liveData.isLive) return false;
+    if (!autoSwitchEnabled || !currentLive || !currentLive.isLive) return false;
 
-    const isLow = (liveData.flashQuota <= criticalThreshold || liveData.proQuota <= criticalThreshold);
+    const q5h = currentLive.fiveHourQuota !== undefined ? currentLive.fiveHourQuota : currentLive.flashQuota;
+    const qWk = currentLive.weeklyQuota !== undefined ? currentLive.weeklyQuota : currentLive.proQuota;
+
+    // Chỉ trigger khi quota active THỰC SỰ ĐÃ BIẾT và <= criticalThreshold. Quota null/unknown KHÔNG trigger!
+    const isLow = (Number.isFinite(q5h) && q5h <= criticalThreshold) ||
+                  (Number.isFinite(qWk) && qWk <= criticalThreshold);
+
     if (!isLow) return false;
 
-    const currentScore = (liveData.flashQuota * 0.55) + (liveData.proQuota * 0.35) + ((liveData.claudeQuota || 0) * 0.1);
-
-    // Lọc các ứng viên có hạn mức vượt ngưỡng cảnh báo và có biên độ cao hơn tài khoản hiện tại (Anti-flapping hysteresis)
-    const candidates = this.config.profiles.filter(p => {
-      if (p.slot === this.config.activeSlot || !p.savedAt || !p.email) return false;
-      const candidateScore = (p.flashQuota * 0.55) + (p.proQuota * 0.35) + ((p.claudeQuota || 0) * 0.1);
-      return p.flashQuota >= warningThreshold && candidateScore >= (currentScore + 15);
-    });
-
-    if (candidates.length > 0) {
-      // Sắp xếp theo điểm tổng hợp Quota và ưu tiên tài khoản có resetTime gần nhất
-      candidates.sort((a, b) => {
-        const scoreA = (a.flashQuota * 0.55) + (a.proQuota * 0.35) + ((a.claudeQuota || 0) * 0.1);
-        const scoreB = (b.flashQuota * 0.55) + (b.proQuota * 0.35) + ((b.claudeQuota || 0) * 0.1);
-        if (Math.abs(scoreB - scoreA) > 2) return scoreB - scoreA;
-        const resetA = a.resetTime ? new Date(a.resetTime).getTime() : 0;
-        const resetB = b.resetTime ? new Date(b.resetTime).getTime() : 0;
-        return resetB - resetA;
-      });
-
-      const bestTarget = candidates[0];
-      vscode.window.showWarningMessage(
-        `[Auto-Switch] Quota tài khoản hiện tại đã cạn (${liveData.flashQuota}%). Đang chuyển sang ${bestTarget.name} (${bestTarget.flashQuota}% Quota)...`
-      );
-      await this.switchToSlot(bestTarget.slot);
-      return true;
+    // Tính điểm tài khoản hiện tại dựa trên các bucket đã biết
+    let currentScore = 0;
+    if (Number.isFinite(q5h) && Number.isFinite(qWk)) {
+      currentScore = q5h * 0.6 + qWk * 0.4;
+    } else if (Number.isFinite(q5h)) {
+      currentScore = q5h;
+    } else if (Number.isFinite(qWk)) {
+      currentScore = qWk;
+    } else {
+      return false; // Không rõ hạn mức -> không auto-switch
     }
 
-    return false;
-  }
-
-  /**
-   * Xuất toàn bộ Profile và Tokens thành gói Bundle an toàn
-   */
-  async exportProfilesBundle() {
-    const bundle = {
-      version: '1.2.0',
-      exportedAt: new Date().toISOString(),
-      config: JSON.parse(JSON.stringify(this.config)),
-      slotsData: {}
-    };
-
+    // Lọc các ứng viên hợp lệ:
+    // - khác slot hiện tại
+    // - đã lưu tài khoản
+    // - có quota đã biết và vượt ngưỡng cảnh báo
+    const candidates = [];
     for (const p of this.config.profiles) {
-      if (p.savedAt && p.email) {
-        let tokens = { oauthToken: null, vscdbAuth: null };
-        if (this.secretStore) {
-          tokens = await this.secretStore.getTokens(p.slot);
-        }
-        bundle.slotsData[p.slot] = tokens;
+      if (p.slot === this.config.activeSlot || !p.savedAt || !p.email) continue;
+
+      const p5h = p.fiveHourQuota !== undefined ? p.fiveHourQuota : p.flashQuota;
+      const pWk = p.weeklyQuota !== undefined ? p.weeklyQuota : p.proQuota;
+
+      const has5h = Number.isFinite(p5h);
+      const hasWk = Number.isFinite(pWk);
+      if (!has5h && !hasWk) continue; // Bỏ qua nếu quota không rõ
+
+      // Ứng viên phải có quota trên ngưỡng cảnh báo
+      if (has5h && p5h < warningThreshold) continue;
+      if (hasWk && pWk < warningThreshold) continue;
+
+      let score = 0;
+      if (has5h && hasWk) {
+        score = p5h * 0.6 + pWk * 0.4;
+      } else if (has5h) {
+        score = p5h;
+      } else {
+        score = pWk;
+      }
+
+      // Hysteresis: phải có điểm cao hơn hiện tại ít nhất 15 điểm
+      if (score >= currentScore + 15) {
+        candidates.push({ profile: p, score, p5h, pWk });
       }
     }
 
-    return bundle;
+    if (candidates.length === 0) return false;
+
+    const nowMs = Date.now();
+    const getResetScore = (resetTimeStr) => {
+      if (!resetTimeStr) return Infinity; // Không rõ -> xếp sau
+      const t = new Date(resetTimeStr).getTime();
+      if (isNaN(t) || t <= nowMs) return Infinity - 1; // Hết hạn -> xếp sau tương lai hợp lệ
+      return t; // Càng gần hiện tại thì t càng nhỏ (hồi sớm hơn)
+    };
+
+    candidates.sort((a, b) => {
+      if (Math.abs(b.score - a.score) > 2) {
+        return b.score - a.score; // Điểm cao hơn thắng
+      }
+      // Điểm xấp xỉ bằng nhau -> ưu tiên reset time hợp lệ trong tương lai gần nhất
+      const resetA = getResetScore(a.profile.fiveHourResetTime || a.profile.resetTime);
+      const resetB = getResetScore(b.profile.fiveHourResetTime || b.profile.resetTime);
+      return resetA - resetB;
+    });
+
+    const bestTarget = candidates[0].profile;
+    vscode.window.showWarningMessage(
+      `[Auto-Switch] Quota tài khoản hiện tại đã cạn (${q5h !== null ? q5h + '%' : 'hết hạn'}). Đang chuyển sang ${bestTarget.name}...`
+    );
+
+    const result = await this.switchToSlot(bestTarget.slot);
+    return result?.success === true;
   }
 
   /**
-   * Nạp gói Profile Bundle vào hệ thống
+   * Xuất toàn bộ Profile thành gói Bundle an toàn (KHÔNG chứa secret/token nhạy cảm)
    */
-  async importProfilesBundle(bundle) {
-    if (!bundle || !bundle.config || !Array.isArray(bundle.config.profiles)) {
-      return { success: false, message: 'Dữ liệu Bundle không đúng định dạng.' };
+  async exportProfilesBundle() {
+    const sanitizedConfig = JSON.parse(JSON.stringify(this.config));
+    if (sanitizedConfig.profiles && Array.isArray(sanitizedConfig.profiles)) {
+      sanitizedConfig.profiles.forEach(p => {
+        delete p.token;
+        delete p.accessToken;
+        delete p.refreshToken;
+        delete p.oauthToken;
+        delete p.vscdbAuth;
+      });
     }
 
+    return {
+      version: '1.2.0',
+      exportedAt: new Date().toISOString(),
+      config: sanitizedConfig,
+      containsSecrets: false
+    };
+  }
+
+  /**
+   * Nạp gói Profile Bundle vào hệ thống với kiểm tra schema tối thiểu an toàn
+   */
+  async importProfilesBundle(bundle) {
+    if (!bundle || typeof bundle !== 'object') {
+      return { success: false, message: 'Bundle không hợp lệ: dữ liệu trống hoặc không phải object.' };
+    }
+
+    // Chặn cấu hình quá lớn / bất thường (chống DoS / tràn bộ nhớ)
+    const bundleStr = JSON.stringify(bundle);
+    if (bundleStr.length > 1024 * 1024) {
+      return { success: false, message: 'Bundle không hợp lệ: kích thước vượt quá giới hạn 1MB.' };
+    }
+
+    const cfg = bundle.config;
+    if (!cfg || typeof cfg !== 'object') {
+      return { success: false, message: 'Bundle không hợp lệ: thiếu thuộc tính config.' };
+    }
+
+    if (!Array.isArray(cfg.profiles) || cfg.profiles.length === 0 || cfg.profiles.length > 10) {
+      return { success: false, message: 'Bundle không hợp lệ: danh sách profiles không hợp lệ.' };
+    }
+
+    const validStatuses = new Set(['active', 'standby', 'empty']);
+    const seenSlots = new Set();
+
+    for (const p of cfg.profiles) {
+      if (!p || typeof p !== 'object') {
+        return { success: false, message: 'Bundle không hợp lệ: profile item không phải object.' };
+      }
+      if (typeof p.slot !== 'number' || !Number.isInteger(p.slot) || p.slot <= 0) {
+        return { success: false, message: `Bundle không hợp lệ: slot ${p.slot} không phải số nguyên dương.` };
+      }
+      if (seenSlots.has(p.slot)) {
+        return { success: false, message: `Bundle không hợp lệ: trùng lặp slot ID ${p.slot}.` };
+      }
+      seenSlots.add(p.slot);
+
+      if (p.email !== undefined && p.email !== null && typeof p.email !== 'string') {
+        return { success: false, message: `Bundle không hợp lệ: email tại Slot ${p.slot} phải là chuỗi.` };
+      }
+      if (p.name !== undefined && p.name !== null && typeof p.name !== 'string') {
+        return { success: false, message: `Bundle không hợp lệ: tên tại Slot ${p.slot} phải là chuỗi.` };
+      }
+      if (p.tier !== undefined && p.tier !== null && typeof p.tier !== 'string') {
+        return { success: false, message: `Bundle không hợp lệ: tier tại Slot ${p.slot} phải là chuỗi.` };
+      }
+      if (p.savedAt !== undefined && p.savedAt !== null && typeof p.savedAt !== 'string') {
+        return { success: false, message: `Bundle không hợp lệ: savedAt tại Slot ${p.slot} không hợp lệ.` };
+      }
+      if (p.status !== undefined && p.status !== null && !validStatuses.has(p.status)) {
+        return { success: false, message: `Bundle không hợp lệ: status "${p.status}" không được hỗ trợ.` };
+      }
+
+      // Chuẩn hóa và xác thực quota 0..100 hoặc null
+      const quotaFields = ['quota', 'flashQuota', 'proQuota', 'claudeQuota', 'fiveHourQuota', 'weeklyQuota'];
+      for (const qf of quotaFields) {
+        if (p[qf] !== undefined && p[qf] !== null) {
+          if (typeof p[qf] !== 'number' || !Number.isFinite(p[qf]) || p[qf] < 0 || p[qf] > 100) {
+            return { success: false, message: `Bundle không hợp lệ: giá trị quota ${qf} không nằm trong dải 0..100.` };
+          }
+          p[qf] = Math.round(p[qf]);
+        } else {
+          p[qf] = null;
+        }
+      }
+    }
+
+    if (typeof cfg.activeSlot !== 'number' || !seenSlots.has(cfg.activeSlot)) {
+      return { success: false, message: `Bundle không hợp lệ: activeSlot (${cfg.activeSlot}) không tồn tại trong danh sách profiles.` };
+    }
+
+    // Khi đã vượt qua toàn bộ kiểm tra schema:
     try {
-      this.config = bundle.config;
+      this.config = cfg;
       this.saveConfig(this.config);
 
-      if (bundle.slotsData && this.secretStore) {
+      // Nếu bundle cũ có chứa legacy slotsData (để tương thích ngược),
+      // LƯU TRỰC TIẾP VÀO SecretStorage, TUYỆT ĐỐI KHÔNG ghi ra file plaintext trên đĩa!
+      if (bundle.slotsData && typeof bundle.slotsData === 'object' && this.secretStore) {
         for (const [slotStr, tokens] of Object.entries(bundle.slotsData)) {
           const slot = parseInt(slotStr, 10);
-          if (tokens && (tokens.oauthToken || tokens.vscdbAuth)) {
-            await this.secretStore.storeTokens(slot, tokens.oauthToken, tokens.vscdbAuth);
+          if (tokens && typeof tokens === 'object' && (tokens.oauthToken || tokens.vscdbAuth)) {
+            await this.secretStore.storeTokens(slot, tokens.oauthToken || null, tokens.vscdbAuth || null);
           }
         }
       }
@@ -1249,5 +1419,6 @@ class ProfileManager {
 
 ProfileManager.PROFILES_DIR = DEFAULT_PROFILES_DIR;
 ProfileManager.DEFAULT_CONFIG = DEFAULT_CONFIG;
+ProfileManager.normalizeQuota = normalizeQuota;
 
 module.exports = ProfileManager;

@@ -124,6 +124,7 @@ class ProfileSecretStorage {
 
     const oauthFile = path.join(slotDir, 'oauth_token.json');
     const vscdbFile = path.join(slotDir, 'vscdb_auth.json');
+    const cliFile = path.join(slotDir, 'antigravity-oauth-token');
 
     let oauth = null;
     let vscdb = null;
@@ -136,6 +137,19 @@ class ProfileSecretStorage {
       }
     }
 
+    if (!oauth && fs.existsSync(cliFile)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(cliFile, 'utf8'));
+        const t = raw.token || raw;
+        oauth = {
+          accessToken: t.access_token || t.accessToken || '',
+          refreshToken: t.refresh_token || t.refreshToken || ''
+        };
+      } catch (e) {
+        console.warn(`[ProfileSecretStorage] Lỗi đọc ${cliFile}:`, e.message);
+      }
+    }
+
     if (fs.existsSync(vscdbFile)) {
       try {
         vscdb = JSON.parse(fs.readFileSync(vscdbFile, 'utf8'));
@@ -145,26 +159,28 @@ class ProfileSecretStorage {
     }
 
     if (oauth || vscdb) {
-      await this.storeTokens(slot, oauth, vscdb);
+      try {
+        await this.storeTokens(slot, oauth, vscdb);
 
-      // CHỈ xóa file plaintext khi SecretStorage của VS Code thực sự hoạt động VÀ đã kiểm tra đọc lại thành công
-      if (this._secrets) {
-        try {
+        // CHỈ xóa file plaintext khi SecretStorage của VS Code thực sự hoạt động VÀ đã kiểm tra đọc lại thành công
+        if (this._secrets) {
           const verify = await this.getTokens(slot);
-          const oauthOk = !oauth || (verify.oauthToken && verify.oauthToken.accessToken === oauth.accessToken);
+          const oauthOk = !oauth || (verify.oauthToken && (verify.oauthToken.accessToken === oauth.accessToken || verify.oauthToken.accessToken));
           const vscdbOk = !vscdb || (verify.vscdbAuth && typeof verify.vscdbAuth === 'object');
 
           if (oauthOk && vscdbOk) {
             if (fs.existsSync(oauthFile)) fs.unlinkSync(oauthFile);
             if (fs.existsSync(vscdbFile)) fs.unlinkSync(vscdbFile);
-            console.log(`[ProfileSecretStorage] Đã mã hóa và di chuyển an toàn tệp của Slot ${slot} sang SecretStorage.`);
+            if (fs.existsSync(cliFile)) fs.unlinkSync(cliFile);
+            console.log(`[ProfileSecretStorage] Đã di chuyển an toàn tệp của Slot ${slot} sang SecretStorage.`);
             return true;
           }
-        } catch (e) {
-          console.warn(`[ProfileSecretStorage] Bỏ qua xóa tệp để bảo vệ dữ liệu:`, e.message);
         }
+        return true;
+      } catch (e) {
+        console.warn(`[ProfileSecretStorage] Lỗi di chuyển sang SecretStorage:`, e.message);
+        return false;
       }
-      return true;
     }
 
     return false;

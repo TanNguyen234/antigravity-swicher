@@ -1,6 +1,7 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const ProfileManager = require('./profileManager');
 const ProfileSecretStorage = require('./secretStore');
 const { restoreWorkspaceState, setStateStorageDir } = require('./workspaceState');
@@ -216,13 +217,13 @@ async function activate(context) {
     })
   );
 
-  // 5.7 Command: Xuất Bundle di chuyển đa thiết bị
+  // 5.7 Command: Xuất Bundle di chuyển đa thiết bị (Không chứa secrets)
   context.subscriptions.push(
     vscode.commands.registerCommand('antigravity-safe-switcher.exportBundle', async () => {
       try {
         const bundle = await profileManager.exportProfilesBundle();
         const uri = await vscode.window.showSaveDialog({
-          defaultUri: vscode.Uri.file(path.join(__dirname, '..', `antigravity_profiles_bundle_${Date.now()}.json`)),
+          defaultUri: vscode.Uri.file(path.join(os.homedir(), `antigravity_profiles_bundle_${Date.now()}.json`)),
           filters: { 'JSON Files': ['json'] },
           saveLabel: 'Xuất gói Profiles Bundle'
         });
@@ -264,7 +265,7 @@ async function activate(context) {
     })
   );
 
-  // 6. Định kỳ kiểm tra Quota thật từ Language Server (Adaptive Polling: 45s khi Dashboard mở, 180s khi đóng để siêu nhẹ máy)
+  // 6. Định kỳ kiểm tra Quota thật từ Language Server (Single-RPC fetch per cycle)
   let lastSyncTime = 0;
   checkInterval = setInterval(async () => {
     const isDashboardActive = typeof hasActiveWebviews === 'function' && hasActiveWebviews();
@@ -275,12 +276,12 @@ async function activate(context) {
     }
     lastSyncTime = Date.now();
 
-    await profileManager.syncCurrentLiveQuota();
+    const liveData = await profileManager.syncCurrentLiveQuota();
     updateStatusBar();
     if (dashboardProvider && isDashboardActive) {
-      dashboardProvider.updateDashboard();
+      dashboardProvider.updateDashboard({ syncLive: false });
     }
-    await profileManager.checkAndAutoSwitch();
+    await profileManager.checkAndAutoSwitch(liveData);
   }, 15000);
 }
 
@@ -289,8 +290,9 @@ function updateStatusBar() {
 
   const active = profileManager.getActiveProfile();
   const isConfigured = Boolean(active && active.savedAt && active.email);
+  const isSessionAuth = Boolean(profileManager.sessionAuthenticated);
 
-  if (!isConfigured) {
+  if (!isConfigured || !isSessionAuth) {
     statusBarItem.text = `$(account) Antigravity [Chưa đăng nhập]`;
     statusBarItem.tooltip = `Antigravity chưa có tài khoản đăng nhập hoặc đã đăng xuất.\nClick để kết nối tài khoản.`;
     statusBarItem.color = '#8b949e';
