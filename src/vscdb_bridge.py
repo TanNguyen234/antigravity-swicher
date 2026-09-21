@@ -17,6 +17,13 @@ def get_db_path():
         return os.path.join(config_dir, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb')
 
 
+MANAGED_KEYS = [
+    'antigravityUnifiedStateSync.oauthToken',
+    'antigravityUnifiedStateSync.userStatus',
+    'antigravity.profileUrl',
+    'antigravityUnifiedStateSync.modelCredits'
+]
+
 def export_auth():
     db_path = get_db_path()
     if not os.path.exists(db_path):
@@ -25,14 +32,8 @@ def export_auth():
         con = sqlite3.connect(db_path, timeout=5.0)
         con.execute("PRAGMA busy_timeout = 5000;")
         cur = con.cursor()
-        keys = [
-            'antigravityUnifiedStateSync.oauthToken',
-            'antigravityUnifiedStateSync.userStatus',
-            'antigravity.profileUrl',
-            'antigravityUnifiedStateSync.modelCredits'
-        ]
         data = {}
-        for k in keys:
+        for k in MANAGED_KEYS:
             cur.execute('SELECT value FROM ItemTable WHERE key=?', (k,))
             row = cur.fetchone()
             if row and row[0] is not None:
@@ -50,18 +51,27 @@ def import_auth(json_file_path):
     try:
         with open(json_file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        if not isinstance(data, dict) or not data:
+        if not isinstance(data, dict):
             return False
 
         con = sqlite3.connect(db_path, timeout=5.0)
         con.execute("PRAGMA busy_timeout = 5000;")
         cur = con.cursor()
-        for k, v in data.items():
-            if v is not None:
-                cur.execute('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)', (k, v))
-        con.commit()
-        con.close()
-        return True
+        try:
+            con.execute("BEGIN TRANSACTION;")
+            for k in MANAGED_KEYS:
+                if k in data and data[k] is not None:
+                    cur.execute('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)', (k, data[k]))
+                else:
+                    cur.execute('DELETE FROM ItemTable WHERE key=?', (k,))
+            con.commit()
+            return True
+        except Exception as e:
+            con.rollback()
+            sys.stderr.write(f"[vscdb_bridge] Lỗi transaction import: {str(e)}\n")
+            return False
+        finally:
+            con.close()
     except Exception as e:
         sys.stderr.write(f"[vscdb_bridge] Lỗi import: {str(e)}\n")
         return False
