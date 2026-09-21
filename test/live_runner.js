@@ -478,7 +478,7 @@ async function runAllTests() {
 
     try {
       const delRes = await pm.deleteProfile(2);
-      report('unit', 'Delete Profile Success', delRes.success === true);
+      report('unit', 'Delete Profile Success', delRes.success === true && delRes.reloadRequired === true);
       report('unit', 'Switched credentials before deleting old slot', switchImportOccurred === true);
       report('unit', 'Deleted Slot Status Empty', pm.config.profiles[1].email === '' && pm.config.profiles[1].status === 'empty');
       report('unit', 'Active Slot Cascaded to Available Slot 1', pm.config.activeSlot === 1 && pm.config.profiles[0].status === 'active');
@@ -506,7 +506,7 @@ async function runAllTests() {
 
     pm.validateAndSanitizeProfiles();
 
-    report('unit', 'Ghost Slot Quota Purged to 0', ghost.flashQuota === 0);
+    report('unit', 'Ghost Slot Quota Purged to null', ghost.flashQuota === null);
     report('unit', 'Ghost Slot Status Set to empty', ghost.status === 'empty');
     report('unit', 'Ghost Slot Name Standardized', ghost.name === 'Slot 99 (Trống)');
 
@@ -519,21 +519,21 @@ async function runAllTests() {
   console.log('\n--- [A15] Client-side Countdown Formatter ---');
   try {
     function formatTimeRemaining(resetTimeStr) {
-      if (!resetTimeStr) return 'Đầy quota';
+      if (!resetTimeStr) return 'Không rõ';
       const diff = new Date(resetTimeStr).getTime() - Date.now();
-      if (diff <= 0) return 'Đầy quota';
+      if (diff <= 0) return 'Đang đồng bộ';
       const hours = Math.floor(diff / (1000 * 60 * 60));
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
       const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-      return `Hồi sau: ${hours}h ${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+      return `${hours}h ${minutes}m ${seconds.toString().padStart(2, '0')}s`;
     }
 
     const future = new Date(Date.now() + 3661000).toISOString();
     const past = new Date(Date.now() - 10000).toISOString();
 
-    report('unit', 'Formats future reset time', formatTimeRemaining(future).startsWith('Hồi sau: 1h'));
-    report('unit', 'Returns "Đầy quota" for past time', formatTimeRemaining(past) === 'Đầy quota');
-    report('unit', 'Returns "Đầy quota" for null time', formatTimeRemaining(null) === 'Đầy quota');
+    report('unit', 'Formats future reset time', formatTimeRemaining(future).startsWith('1h'));
+    report('unit', 'Returns "Đang đồng bộ" for past time', formatTimeRemaining(past) === 'Đang đồng bộ');
+    report('unit', 'Returns "Không rõ" for null time', formatTimeRemaining(null) === 'Không rõ');
   } catch (err) {
     report('unit', 'Countdown Formatter Test', false, err.message);
   }
@@ -976,8 +976,13 @@ async function runAllTests() {
       pm5.config.profiles[1].savedAt = new Date().toISOString();
       pm5.config.profiles[1].status = 'standby';
 
+      const mockStorage5 = new Map();
       const mockStore5 = new ProfileSecretStorage({
-        secrets: { store: async () => {}, get: async () => null, delete: async () => {} }
+        secrets: {
+          store: async (k, v) => mockStorage5.set(k, v),
+          get: async (k) => mockStorage5.get(k) || null,
+          delete: async (k) => mockStorage5.delete(k)
+        }
       });
       pm5.secretStore = mockStore5;
       await mockStore5.storeTokens(1, { accessToken: 'h1' }, slot1Auth);
@@ -1009,6 +1014,223 @@ async function runAllTests() {
     }
   } catch (err) {
     report('unit', 'Account-State Correctness Test Suite', false, err.message);
+  }
+
+  // TEST A21: Runtime Consistency, UI Logic & Empty VSCDB Clear Gates
+  console.log('\n--- [A21] Runtime Consistency & Empty VSCDB Clear Gates ---');
+  try {
+    // 1. VSCDB bridge accepts empty dictionary {} and deletes all 4 managed keys while preserving unrelated keys
+    let vscdbEmptyCleared = false;
+    try {
+      const vscdbHelper = require('../src/vscdbHelper');
+      const bridgeScript = path.join(__dirname, '..', 'src', 'vscdb_bridge.py');
+      const pyCmd = vscdbHelper.resolvePythonCommand();
+      const tempTestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vscdb-clear-test-'));
+      const dbDir = path.join(tempTestDir, 'Antigravity IDE', 'User', 'globalStorage');
+      fs.mkdirSync(dbDir, { recursive: true });
+      const dbPath = path.join(dbDir, 'state.vscdb');
+
+      const initPy = [
+        'import sqlite3',
+        `con = sqlite3.connect(r"""${dbPath}""")`,
+        'cur = con.cursor()',
+        'cur.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")',
+        'cur.execute("INSERT INTO ItemTable VALUES (\'antigravityUnifiedStateSync.oauthToken\', \'token_clear\')")',
+        'cur.execute("INSERT INTO ItemTable VALUES (\'antigravityUnifiedStateSync.userStatus\', \'status_clear\')")',
+        'cur.execute("INSERT INTO ItemTable VALUES (\'antigravity.profileUrl\', \'url_clear\')")',
+        'cur.execute("INSERT INTO ItemTable VALUES (\'antigravityUnifiedStateSync.modelCredits\', \'credits_clear\')")',
+        'cur.execute("INSERT INTO ItemTable VALUES (\'unrelatedKey\', \'keep_me_preserved\')")',
+        'con.commit()',
+        'con.close()'
+      ].join('\n');
+      cp.execFileSync(pyCmd, ['-c', initPy], { stdio: 'ignore' });
+
+      const emptySnapshotFile = path.join(tempTestDir, 'empty_snap.json');
+      fs.writeFileSync(emptySnapshotFile, JSON.stringify({}), 'utf8');
+
+      const testEnv = Object.assign({}, process.env, {
+        APPDATA: tempTestDir,
+        XDG_CONFIG_HOME: tempTestDir,
+        HOME: tempTestDir,
+        USERPROFILE: tempTestDir
+      });
+
+      const importOut = cp.execFileSync(pyCmd, [bridgeScript, 'import', emptySnapshotFile], {
+        env: testEnv,
+        encoding: 'utf8'
+      });
+
+      const verifyPy = [
+        'import sqlite3, json',
+        `con = sqlite3.connect(r"""${dbPath}""")`,
+        'cur = con.cursor()',
+        'cur.execute("SELECT key, value FROM ItemTable")',
+        'rows = dict(cur.fetchall())',
+        'con.close()',
+        'print(json.dumps(rows))'
+      ].join('\n');
+      const verifyOut = cp.execFileSync(pyCmd, ['-c', verifyPy], {
+        env: testEnv,
+        encoding: 'utf8'
+      });
+      const rows = JSON.parse(verifyOut.trim());
+
+      const oauthDeleted = !('antigravityUnifiedStateSync.oauthToken' in rows);
+      const userStatusDeleted = !('antigravityUnifiedStateSync.userStatus' in rows);
+      const profileUrlDeleted = !('antigravity.profileUrl' in rows);
+      const creditsDeleted = !('antigravityUnifiedStateSync.modelCredits' in rows);
+      const unrelatedPreserved = rows['unrelatedKey'] === 'keep_me_preserved';
+
+      vscdbEmptyCleared = (importOut || '').trim() === 'OK' &&
+        oauthDeleted && userStatusDeleted && profileUrlDeleted && creditsDeleted && unrelatedPreserved;
+
+      try { fs.rmSync(tempTestDir, { recursive: true, force: true }); } catch (e) {}
+    } catch (e) {
+      console.warn('VSCDB empty clear test warning:', e.message);
+    }
+    report('unit', 'VSCDB import accepts empty dict {} to clear all managed auth keys', vscdbEmptyCleared);
+
+    // 2. Deleting final configured account leaves clean logged-out state with reloadRequired
+    const pmFinal = new ProfileManager();
+    pmFinal.config.activeSlot = 1;
+    pmFinal.config.profiles[0].email = 'solo_account@gmail.com';
+    pmFinal.config.profiles[0].savedAt = new Date().toISOString();
+    pmFinal.config.profiles[0].status = 'active';
+    pmFinal.config.profiles[0].quota = 50;
+    pmFinal.config.profiles[0].flashQuota = 40;
+    pmFinal.config.profiles[0].proQuota = 30;
+    pmFinal.config.profiles[0].claudeQuota = 20;
+
+    pmFinal.config.profiles[1].email = '';
+    pmFinal.config.profiles[1].savedAt = null;
+    pmFinal.config.profiles[1].status = 'empty';
+
+    pmFinal.config.profiles[2].email = '';
+    pmFinal.config.profiles[2].savedAt = null;
+    pmFinal.config.profiles[2].status = 'empty';
+
+    let logoutCalled = false;
+    let importEmptyCalled = false;
+    pmFinal.logoutCurrent = async () => { logoutCalled = true; return true; };
+    const vscdbHelperOrig = require('../src/vscdbHelper');
+    const origImportHelper = vscdbHelperOrig.importVscdbAuth;
+    vscdbHelperOrig.importVscdbAuth = async (data) => {
+      if (data && Object.keys(data).length === 0) {
+        importEmptyCalled = true;
+      }
+      return true;
+    };
+
+    const finalDelRes = await pmFinal.deleteProfile(1);
+    vscdbHelperOrig.importVscdbAuth = origImportHelper;
+
+    report('unit', 'Deleting final account leaves clean logged-out state with reloadRequired: true',
+      finalDelRes.success === true &&
+      finalDelRes.reloadRequired === true &&
+      logoutCalled === true &&
+      importEmptyCalled === true &&
+      pmFinal.config.profiles[0].status === 'empty' &&
+      pmFinal.config.profiles[0].email === '' &&
+      pmFinal.config.profiles[0].quota === null &&
+      pmFinal.config.profiles[0].flashQuota === null &&
+      pmFinal.config.profiles[0].proQuota === null &&
+      pmFinal.config.profiles[0].claudeQuota === null &&
+      pmFinal.config.profiles[0].savedAt === null
+    );
+
+    // 3. Login polling failure preserves previous activeSlot intact
+    const pmPoll = new ProfileManager();
+    pmPoll.config.activeSlot = 1;
+    pmPoll.saveCurrentToSlot = async () => ({ success: false, message: 'Binding failed' }); // binding fails
+    const mockPollFetcher = {
+      getRealAccountAndQuota: async () => ({
+        isLive: true,
+        email: 'brand_new_unbound@gmail.com',
+        quota: 100
+      })
+    };
+    const pollResult = await pmPoll._pollForNewUserSession(2, 2, mockPollFetcher, 10);
+    report('unit', 'Failed saveCurrentToSlot preserves previous activeSlot intact',
+      pollResult.success === false &&
+      pmPoll.config.activeSlot === 1
+    );
+
+    // 4. Overwrite protection: external account does not overwrite existing profiles when full
+    const pmFull = new ProfileManager();
+    pmFull.config.activeSlot = 1;
+    pmFull.config.profiles[0].email = 'slot1_full@gmail.com';
+    pmFull.config.profiles[0].savedAt = new Date().toISOString();
+    pmFull.config.profiles[0].status = 'active';
+
+    pmFull.config.profiles[1].email = 'slot2_full@gmail.com';
+    pmFull.config.profiles[1].savedAt = new Date().toISOString();
+    pmFull.config.profiles[1].status = 'standby';
+
+    pmFull.config.profiles[2].email = 'slot3_full@gmail.com';
+    pmFull.config.profiles[2].savedAt = new Date().toISOString();
+    pmFull.config.profiles[2].status = 'standby';
+
+    const fullFetcher = {
+      getRealAccountAndQuota: async () => ({
+        isLive: true,
+        email: 'untracked_external@gmail.com',
+        flashQuota: 50,
+        proQuota: 50,
+        claudeQuota: 50
+      })
+    };
+    await pmFull.syncCurrentLiveQuota(fullFetcher);
+    report('unit', 'External account does not overwrite configured profiles when slots are full',
+      pmFull.config.profiles[0].email === 'slot1_full@gmail.com' &&
+      pmFull.config.profiles[1].email === 'slot2_full@gmail.com' &&
+      pmFull.config.profiles[2].email === 'slot3_full@gmail.com'
+    );
+
+    // 5. Quota values: 0 is valid 0%, null/undefined is unknown, no fallback to 100
+    const pmQuota = new ProfileManager();
+    const testProfile = {
+      slot: 1,
+      name: 'Slot 1',
+      email: 'test@gmail.com',
+      status: 'active',
+      quota: null,
+      flashQuota: null,
+      proQuota: null,
+      claudeQuota: null
+    };
+
+    pmQuota._applyRealDataToProfile(testProfile, {
+      flashQuota: 0,
+      proQuota: undefined,
+      claudeQuota: null,
+      fiveHourQuota: 0,
+      weeklyQuota: undefined
+    });
+
+    report('unit', 'Quota 0% preserved as 0 and undefined/null preserved as null',
+      testProfile.flashQuota === 0 &&
+      testProfile.proQuota === null &&
+      testProfile.claudeQuota === null &&
+      testProfile.fiveHourQuota === 0 &&
+      testProfile.weeklyQuota === null
+    );
+
+    // 6. BroadcastUpdate with { syncLive: false } avoids calling syncCurrentLiveQuota
+    const dashboardProvider = require('../src/dashboardProvider');
+    let syncLiveCalled = false;
+    const pmSyncTest = {
+      syncCurrentLiveQuota: async () => { syncLiveCalled = true; },
+      getAllProfiles: () => [],
+      getConfig: () => ({ activeSlot: 1, profiles: [] }),
+      getSummaryMetrics: () => ({}),
+      getLiveTelemetry: () => ({}),
+      isTokenExpiringSoon: async () => ({ isExpiring: false, expired: false })
+    };
+    await dashboardProvider.broadcastUpdate(pmSyncTest, { syncLive: false });
+    report('unit', 'broadcastUpdate with { syncLive: false } suppresses live quota sync', syncLiveCalled === false);
+
+  } catch (err) {
+    report('unit', 'Runtime Consistency Test Suite', false, err.message);
   }
 } // end if (shouldRunUnit)
 
