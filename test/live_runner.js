@@ -573,6 +573,148 @@ async function runAllTests() {
   } catch (err) {
     report('unit', 'Fast Health Check Test', false, err.message);
   }
+
+  // TEST A19: Reliable switchToSlot (Validation, Import Failure, Verification Mismatch & Rollback)
+  console.log('\n--- [A19] Reliable switchToSlot (Validation, Verification & Rollback) ---');
+  try {
+    const vscdbHelper = require('../src/vscdbHelper');
+    const originalImport = vscdbHelper.importVscdbAuth;
+    const originalExport = vscdbHelper.exportVscdbAuth;
+
+    try {
+      // Subtest 1: Target missing auth is rejected before mutation
+      const pm1 = new ProfileManager();
+      pm1.config.activeSlot = 1;
+      pm1.config.profiles[0].email = 'slot1@gmail.com';
+      pm1.config.profiles[0].savedAt = new Date().toISOString();
+      pm1.config.profiles[0].status = 'active';
+
+      pm1.config.profiles[1].email = 'slot2_noauth@gmail.com';
+      pm1.config.profiles[1].savedAt = new Date().toISOString();
+      pm1.config.profiles[1].status = 'standby';
+
+      // No secrets or tokens stored for slot 2
+      const missingAuthRes = await pm1.switchToSlot(2);
+      report('unit', 'Target missing auth is rejected before mutation', 
+        missingAuthRes.success === false && 
+        missingAuthRes.message.includes('thiếu dữ liệu xác thực') &&
+        pm1.config.activeSlot === 1 && 
+        pm1.config.profiles[0].status === 'active' &&
+        pm1._isSwitching === false
+      );
+
+      // Subtest 2: importVscdbAuth() === false does not change active slot and reports rollback
+      const mockStorage = new Map();
+      const mockContext = {
+        secrets: {
+          store: async (k, v) => mockStorage.set(k, v),
+          get: async (k) => mockStorage.get(k) || null,
+          delete: async (k) => mockStorage.delete(k)
+        }
+      };
+      const secretStore = new ProfileSecretStorage(mockContext);
+      const pm2 = new ProfileManager(secretStore);
+      pm2.config.activeSlot = 1;
+      pm2.config.profiles[0].email = 'slot1@gmail.com';
+      pm2.config.profiles[0].savedAt = new Date().toISOString();
+      pm2.config.profiles[0].status = 'active';
+
+      pm2.config.profiles[1].email = 'slot2@gmail.com';
+      pm2.config.profiles[1].savedAt = new Date().toISOString();
+      pm2.config.profiles[1].status = 'standby';
+
+      const slot2TargetAuth = {
+        'antigravityUnifiedStateSync.oauthToken': JSON.stringify({ accessToken: 'slot2_token' })
+      };
+      await secretStore.storeTokens(2, { accessToken: 'slot2_token' }, slot2TargetAuth);
+
+      // Mock vscdbHelper: snapshot returns slot1 auth, import fails (returns false)
+      let rollbackImportCalled = false;
+      const slot1AuthSnapshot = {
+        'antigravityUnifiedStateSync.oauthToken': JSON.stringify({ accessToken: 'slot1_token' })
+      };
+      vscdbHelper.exportVscdbAuth = async () => slot1AuthSnapshot;
+      vscdbHelper.importVscdbAuth = async (data) => {
+        if (data && data['antigravityUnifiedStateSync.oauthToken'] === slot1AuthSnapshot['antigravityUnifiedStateSync.oauthToken']) {
+          rollbackImportCalled = true;
+          return true;
+        }
+        return false;
+      };
+
+      const importFailRes = await pm2.switchToSlot(2, null, { noReload: true });
+      report('unit', 'importVscdbAuth() === false stops switch and preserves active slot',
+        importFailRes.success === false &&
+        importFailRes.rollbackSucceeded === true &&
+        rollbackImportCalled === true &&
+        pm2.config.activeSlot === 1 &&
+        pm2.config.profiles[0].status === 'active' &&
+        pm2._isSwitching === false
+      );
+
+      // Subtest 3: Verification mismatch causes failure and restores previous auth state
+      let hasImportedTarget = false;
+      let restoredSnapshot = null;
+      vscdbHelper.importVscdbAuth = async (data) => {
+        if (data && data['antigravityUnifiedStateSync.oauthToken'] === slot2TargetAuth['antigravityUnifiedStateSync.oauthToken']) {
+          hasImportedTarget = true;
+          return true;
+        }
+        if (data && data['antigravityUnifiedStateSync.oauthToken'] === slot1AuthSnapshot['antigravityUnifiedStateSync.oauthToken']) {
+          restoredSnapshot = data;
+          return true;
+        }
+        return true;
+      };
+      vscdbHelper.exportVscdbAuth = async () => {
+        if (!hasImportedTarget) {
+          return slot1AuthSnapshot;
+        }
+        return { 'antigravityUnifiedStateSync.oauthToken': JSON.stringify({ accessToken: 'mismatched_corrupted_token' }) };
+      };
+
+      const mismatchRes = await pm2.switchToSlot(2, null, { noReload: true });
+      report('unit', 'Verification mismatch triggers failure and rollback',
+        mismatchRes.success === false &&
+        mismatchRes.rollbackSucceeded === true &&
+        mismatchRes.message.includes('Xác minh chứng thực thất bại') &&
+        Boolean(restoredSnapshot) &&
+        restoredSnapshot['antigravityUnifiedStateSync.oauthToken'] === slot1AuthSnapshot['antigravityUnifiedStateSync.oauthToken'] &&
+        pm2.config.activeSlot === 1 &&
+        pm2.config.profiles[0].status === 'active' &&
+        pm2._isSwitching === false
+      );
+
+      // Subtest 4: Successful auth import & verification updates active slot
+      vscdbHelper.importVscdbAuth = async () => true;
+      vscdbHelper.exportVscdbAuth = async () => slot2TargetAuth;
+
+      const successRes = await pm2.switchToSlot(2, null, { noReload: true });
+      report('unit', 'Successful auth import & verification updates active slot',
+        successRes.success === true &&
+        pm2.config.activeSlot === 2 &&
+        pm2.config.profiles[1].status === 'active' &&
+        pm2.config.profiles[0].status === 'standby' &&
+        pm2._isSwitching === false
+      );
+
+      // Subtest 5: _isSwitching always becomes false even when an error is thrown
+      vscdbHelper.importVscdbAuth = async () => {
+        throw new Error('Fatal filesystem error');
+      };
+      const errorRes = await pm2.switchToSlot(1, null, { noReload: true });
+      report('unit', '_isSwitching always becomes false on thrown error',
+        errorRes.success === false &&
+        pm2._isSwitching === false
+      );
+
+    } finally {
+      vscdbHelper.importVscdbAuth = originalImport;
+      vscdbHelper.exportVscdbAuth = originalExport;
+    }
+  } catch (err) {
+    report('unit', 'Reliable switchToSlot Test Suite', false, err.message);
+  }
 } // end if (shouldRunUnit)
 
   if (shouldRunLive) {
