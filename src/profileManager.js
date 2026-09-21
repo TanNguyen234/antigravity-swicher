@@ -666,42 +666,57 @@ class ProfileManager {
    */
   async deleteProfile(slotNumber) {
     try {
-      const slotDir = this.getSlotDir(slotNumber);
-      if (fs.existsSync(slotDir)) {
-        fs.rmSync(slotDir, { recursive: true, force: true });
-      }
-      if (this.secretStore) {
-        await this.secretStore.clearSlotTokens(slotNumber);
-      }
-
       const profile = this.config.profiles.find(p => p.slot === slotNumber);
-      if (profile) {
-        profile.name = `Slot ${slotNumber} (Trống)`;
-        profile.email = '';
-        profile.tier = 'N/A';
-        profile.savedAt = null;
-        profile.flashQuota = 0;
-        profile.proQuota = 0;
-        profile.claudeQuota = 0;
-        profile.resetTime = null;
-        profile.status = 'empty';
+      if (!profile) {
+        return { success: false, message: `Không tìm thấy Slot ${slotNumber}` };
       }
 
+      // 1. Nếu đang xóa activeSlot
       if (this.config.activeSlot === slotNumber) {
         const otherConfigured = this.config.profiles.find(p => p.slot !== slotNumber && p.savedAt && p.email);
         if (otherConfigured) {
-          this.config.activeSlot = otherConfigured.slot;
-          otherConfigured.status = 'active';
-          try {
-            await this.switchToSlot(otherConfigured.slot, null, { dryRun: true, restartServer: false });
-          } catch (e) {}
+          // Thực hiện chuyển sang slot thay thế bằng luồng switchToSlot THẬT (không dùng dryRun)
+          const switchRes = await this.switchToSlot(otherConfigured.slot, null, { noReload: true });
+          if (!switchRes || switchRes.success !== true) {
+            return {
+              success: false,
+              message: `Không thể chuyển sang tài khoản thay thế (Slot ${otherConfigured.slot}) trước khi xóa: ${switchRes?.message || 'Lỗi chuyển đổi'}. Tài khoản hiện tại được bảo toàn.`
+            };
+          }
         } else {
+          // Không còn tài khoản nào khác: Logout tài khoản hiện tại và xóa sạch state vscdb
           await this.logoutCurrent();
-          this.config.activeSlot = (slotNumber === 1) ? 2 : 1;
+          try {
+            await vscdbHelper.importVscdbAuth({});
+          } catch (e) {}
         }
       }
 
-      this.saveConfig(this.config);
+      // 2. Xóa dữ liệu ổ đĩa và secretStore của slot
+      const slotDir = this.getSlotDir(slotNumber);
+      if (fs.existsSync(slotDir)) {
+        try { fs.rmSync(slotDir, { recursive: true, force: true }); } catch (e) {}
+      }
+      if (this.secretStore) {
+        try { await this.secretStore.clearSlotTokens(slotNumber); } catch (e) {}
+      }
+
+      // 3. Reset metadata của slot thành empty
+      profile.name = `Slot ${slotNumber} (Trống)`;
+      profile.email = '';
+      profile.tier = 'N/A';
+      profile.savedAt = null;
+      profile.flashQuota = 0;
+      profile.proQuota = 0;
+      profile.claudeQuota = 0;
+      profile.resetTime = null;
+      profile.status = (this.config.activeSlot === slotNumber) ? 'active' : 'empty';
+
+      const saved = this.saveConfig(this.config);
+      if (!saved) {
+        return { success: false, message: 'Lỗi ghi tệp cấu hình sau khi xóa slot.' };
+      }
+
       return { success: true, message: `Đã xóa tài khoản và giải phóng Slot ${slotNumber} thành Slot trống!` };
     } catch (err) {
       console.error(`[ProfileManager] Lỗi khi xóa profile ${slotNumber}:`, err);
@@ -874,7 +889,8 @@ class ProfileManager {
 
       // Sao lưu auth của slot hiện tại trước khi chuyển
       const currentActive = this.getActiveProfile();
-      if (currentActive && currentActive.savedAt && currentActive.email) {
+      const isCurrentConfigured = Boolean(currentActive && currentActive.savedAt && currentActive.email);
+      if (isCurrentConfigured) {
         await this._autoBackupSlotAuth(currentActive.slot);
       }
 
@@ -887,16 +903,25 @@ class ProfileManager {
         console.warn('[ProfileManager] Cảnh báo khi xuất snapshot auth trước khi đổi:', e.message);
       }
 
+      const hasPreviousSnapshot = Boolean(previousVscdbAuth && Object.keys(previousVscdbAuth).length > 0);
+      if (isCurrentConfigured && !hasPreviousSnapshot) {
+        return {
+          success: false,
+          message: `Không thể chụp bản sao lưu chứng thực cho tài khoản hiện tại (Slot ${previousActiveSlot}). Hủy chuyển đổi để đảm bảo an toàn.`
+        };
+      }
+
       // Hàm rollback nội bộ khôi phục auth snapshot và cấu hình nếu thất bại
       const rollback = async (reason) => {
-        let rollbackSucceeded = true;
+        let rollbackSucceeded = false;
         try {
           if (previousVscdbAuth && Object.keys(previousVscdbAuth).length > 0) {
             const restored = await vscdbHelper.importVscdbAuth(previousVscdbAuth);
-            if (restored !== true) {
-              rollbackSucceeded = false;
-            }
+            rollbackSucceeded = (restored === true);
+          } else {
+            rollbackSucceeded = false;
           }
+
           if (this.config.activeSlot !== previousActiveSlot) {
             this.config.activeSlot = previousActiveSlot;
             this.config.profiles.forEach(p => {
@@ -966,6 +991,7 @@ class ProfileManager {
       }
 
       // 7. Commit state CHỈ SAU KHI xác minh thành công
+      const previousProfiles = JSON.parse(JSON.stringify(this.config.profiles));
       this.config.profiles.forEach(p => {
         if (p.savedAt && p.email) {
           p.status = (p.slot === targetSlot) ? 'active' : 'standby';
@@ -974,7 +1000,18 @@ class ProfileManager {
         }
       });
       this.config.activeSlot = targetSlot;
-      this.saveConfig(this.config);
+      const configSaved = this.saveConfig(this.config);
+
+      if (!configSaved) {
+        this.config.activeSlot = previousActiveSlot;
+        this.config.profiles = previousProfiles;
+        const rollbackSucceeded = await rollback('config_save_failed');
+        return {
+          success: false,
+          message: `Lỗi ghi tệp cấu hình profiles.json. Đã rollback chứng thực về Slot ${previousActiveSlot}.`,
+          rollbackSucceeded
+        };
+      }
 
       progress(3, 'Đang làm mới cửa sổ IDE để Khung Chat & Language Server nhận diện tài khoản mới...');
 
