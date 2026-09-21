@@ -5,14 +5,13 @@
 <h1 align="center">Antigravity Safe Account Manager & Dashboard</h1>
 
 <p align="center">
-  <b>Extension quản lý đa tài khoản Google AI, luân chuyển tức thì (Zero-Reload Hot Switch), tự động xoay tua thông minh khi cạn quota và bảng điều khiển Token Analytics chuẩn Linear / Raycast Studio cho Antigravity IDE.</b>
+  <b>Extension quản lý đa tài khoản Google AI, tự động luân chuyển phiên làm việc khi cạn hạn mức, bảo toàn tab mở và con trỏ chuột qua reload, cùng bảng điều khiển Token Analytics cho Antigravity IDE.</b>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.2.0-blue.svg?style=flat-square" alt="Version 1.2.0" />
-  <img src="https://img.shields.io/badge/tests-53%2F53%20passing-brightgreen.svg?style=flat-square" alt="Tests 53/53 Passing" />
-  <img src="https://img.shields.io/badge/security-OS--SecretStorage%20(DPAPI%2FKeychain)-purple.svg?style=flat-square" alt="Security SecretStorage" />
-  <img src="https://img.shields.io/badge/antivirus-100%25%20Avast--Safe-success.svg?style=flat-square" alt="Antivirus Safe" />
+  <img src="https://img.shields.io/badge/platform-Windows%20(tested)-informational.svg?style=flat-square" alt="Platform Tested" />
+  <img src="https://img.shields.io/badge/security-OS--SecretStorage-purple.svg?style=flat-square" alt="Security SecretStorage" />
   <img src="https://img.shields.io/badge/license-MIT-informational.svg?style=flat-square" alt="License MIT" />
 </p>
 
@@ -20,37 +19,38 @@
 
 ## 🌟 Điểm Nổi Bật (Key Features)
 
-### 1. ⚡ Zero-Reload Hot Switch (Chuyển Đổi Trong 1 Giây)
-- Đổi tài khoản Google AI đang liên kết trực tiếp trong bộ nhớ thông qua `vscode.antigravityUnifiedStateSync.OAuthPreferences` và SQLite State Snapshot.
-- **Hoàn toàn không cần reload window**, giữ nguyên toàn bộ ngữ cảnh lập trình, terminal đang chạy và các file đang mở.
+### 1. ⚡ Luân Chuyển Nhanh Kèm Bảo Toàn Không Gian Làm Việc (Fast Swap & Workspace Preservation)
+- Cập nhật chứng thực tài khoản an toàn qua SQLite `state.vscdb` và SecretStorage.
+- Tự động phát hiện và lưu các tài liệu chưa lưu (`hasDirtyDocuments`), ghi nhớ toàn bộ tab đang mở, view column và vị trí con trỏ chuột (`workspaceState.js`).
+- Thực hiện làm mới cửa sổ (`reloadWindow`) có bảo toàn trạng thái, tự động khôi phục ngữ cảnh làm việc sau khi IDE nạp tài khoản mới.
 
-### 2. 🎨 Giao Diện Studio Đẳng Cấp (`/design-taste-frontend`)
-- Thiết kế theo phong cách **Linear / Raycast / Vercel Studio**: Tối giản, sang trọng, tương phản chuẩn WCAG AA.
-- **Bố cục Bento Grid**: Tự động co giãn mượt mà từ bảng điều khiển Sidebar hẹp (1 cột) đến Tab rộng (3 cột).
-- **Banner Phím Tắt Xúc Giác (Tactile Keycap)**: `Ctrl` + `Alt` + `S` kèm nút bấm *Đổi tài khoản kế tiếp (Fast Swap)* trực quan.
-- **Stepper HUD Visualizer**: Hiển thị thanh tiến trình 4 giai đoạn thời gian thực khi chuyển đổi (`Sao lưu` $\rightarrow$ `Nạp Token` $\rightarrow$ `Khởi động LS` $\rightarrow$ `Xác thực`).
-- **Hệ Thống Quota Gauges Đa Mô Hình**: Phân chia màu sắc thông minh theo thời gian thực (Xanh lục >30%, Vàng 11-30%, Đỏ ≤10%) cho **Gemini Flash**, **Gemini Pro** và **Claude 3.7 Sonnet**.
-- Đổi tên gợi nhớ inline (ví dụ: *AI Công Việc*, *AI Cá Nhân*) và sao chép email 1-click có tooltip phản hồi.
+### 2. 🎨 Giao Diện Dashboard Tối Giản
+- Thiết kế tối giản, trực quan, tương phản chuẩn WCAG AA.
+- **Bố cục Bento Grid**: Tự động co giãn từ bảng điều khiển Sidebar (1 cột) đến Tab rộng (3 cột).
+- **Banner Phím Tắt**: `Ctrl` + `Alt` + `S` (macOS: `Cmd` + `Alt` + `S`) để xoay vòng nhanh sang tài khoản kế tiếp.
+- **Stepper HUD Visualizer**: Hiển thị tiến trình trực quan khi đổi tài khoản (`Sao lưu` $\rightarrow$ `Nạp Token` $\rightarrow$ `Làm mới IDE` $\rightarrow$ `Hoàn tất`).
+- **Hệ Thống Quota Gauges Đa Mô Hình**: Phân màu trực quan theo thời gian thực (Xanh >30%, Vàng 11-30%, Đỏ ≤10%) cho **Gemini Flash**, **Gemini Pro** và **Claude 3.7 Sonnet**.
+- Đổi tên gợi nhớ inline (click biểu tượng bút chì) và sao chép email 1-click có tooltip phản hồi.
 - Đồng hồ đếm ngược phục hồi quota thời gian thực (`Hồi sau: Xh Ym Zs`).
 
-### 3. 🧠 Smart Auto-Switch & Anti-Flapping Hysteresis
+### 3. 🧠 Tự Động Luân Chuyển Khi Cạn Hạn Mức (Smart Auto-Switch)
 - Tự động phát hiện khi tài khoản đang hoạt động cạn hạn mức (Quota $\le 10\%$ hoặc gặp mã lỗi 429).
 - Thuật toán chấm điểm tối ưu:
   $$\text{Score} = (\text{Flash} \times 0.55) + (\text{Pro} \times 0.35) + (\text{Claude} \times 0.10)$$
-- **Ngưỡng an toàn Hysteresis (+15 điểm)**: Chỉ kích hoạt chuyển đổi khi tài khoản ứng viên vượt trội ít nhất 15 điểm so với tài khoản hiện tại, loại bỏ hoàn toàn hiện tượng đảo slot liên tục khi quota xấp xỉ nhau.
+- **Ngưỡng an toàn Hysteresis (+15 điểm)**: Chỉ kích hoạt chuyển đổi khi tài khoản ứng viên vượt trội ít nhất 15 điểm so với tài khoản hiện tại, hạn chế việc đảo slot liên tục khi quota xấp xỉ nhau.
 
-### 4. 🛡️ Bảo Mật Tuyệt Đối & Zero Data Loss
+### 4. 🛡️ Lưu Trữ An Toàn Qua OS SecretStorage
 - Mã hóa token ở cấp hệ điều hành thông qua **VS Code SecretStorage** (Windows DPAPI / macOS Keychain / Linux SecretService).
-- **Quy trình Di Chuyển An Toàn (Verified Migration)**: Bắt buộc đọc lại và xác minh thành công trước khi hủy bất kỳ file plaintext nào trên ổ đĩa. Nếu chạy ngoài môi trường VS Code, file đĩa được bảo lưu 100%.
-- Cơ chế lưu trữ cách ly trên ổ đĩa `D:\Projects\antigravity-account-switcher\profiles` tránh việc các phần mềm diệt virus (Avast, Windows Defender) quét nhầm hay xóa nhầm file dữ liệu.
+- **Quy trình Di Chuyển An Toàn (Verified Migration)**: Bắt buộc đọc lại và xác minh thành công từ SecretStorage trước khi hủy các file token plaintext cũ trên đĩa. Khi chạy ngoài môi trường VS Code (testing/scripts), file được giữ nguyên an toàn.
+- Cấu hình được lưu trữ tại thư mục lưu trữ tiêu chuẩn của hệ điều hành (`globalStorageUri` / standard storage), không sử dụng đường dẫn cứng cục bộ.
 
-### 5. 💾 Bảo Toàn Tình Trạng Workspace (Workspace State Resilience)
-- Tự động phát hiện các tài liệu chưa được lưu (`hasDirtyDocuments`) và kích hoạt `saveAll()` an toàn trước khi nạp lại cửa sổ nếu có yêu cầu.
-- Ghi nhớ và phục hồi chính xác danh sách tab đang mở, view column và vị trí con trỏ chuột.
+### 5. 💾 Bảo Toàn Trạng Thái Workspace (Workspace State Resilience)
+- Tự động phát hiện các tài liệu chưa được lưu và kích hoạt `saveAll()` an toàn trước khi nạp lại cửa sổ.
+- Ghi nhớ và phục hồi danh sách tab đang mở, view column và vị trí con trỏ chuột.
 
-### 6. 📦 Xuất / Nhập Bundle Đa Thiết Bị (Multi-Device Bundle)
-- Đóng gói toàn bộ cấu hình 3 slot cùng token mã hóa thành 1 tệp JSON duy nhất (`antigravity_profiles_bundle.json`).
-- Nạp cấu hình sang máy tính hoặc môi trường làm việc mới chỉ trong 1 giây qua Command Palette.
+### 6. 📦 Xuất / Nhập Bundle Cấu Hình (Profiles Bundle)
+- Đóng gói cấu hình 3 slot cùng token vào 1 tệp JSON duy nhất (`antigravity_profiles_bundle.json`).
+- Hỗ trợ di chuyển cấu hình sang máy tính mới qua Command Palette.
 
 ---
 
@@ -64,7 +64,7 @@ graph TD
         CmdPalette["VS Code Command Palette"]
     end
 
-    subgraph Core ["Lõi Động Cơ (Profile Engine)"]
+    subgraph Core ["Lõi Quản Lý (Profile Engine)"]
         PM["ProfileManager"]
         SS["ProfileSecretStorage (OS DPAPI / Keychain)"]
         WS["WorkspaceStateManager"]
@@ -72,11 +72,10 @@ graph TD
 
     subgraph Bridge ["Cầu Nối Dữ Liệu & Hạn Mức"]
         VSCDB["vscdbHelper + vscdb_bridge.py (SQLite)"]
-        LS["liveQuotaFetcher (Connect-RPC HTTPS Probe)"]
+        LS["liveQuotaFetcher (Connect-RPC Probe)"]
     end
 
     subgraph Antigravity ["Hệ Thống Antigravity IDE"]
-        API["vscode.antigravityUnifiedStateSync"]
         Server["Antigravity Language Server (PID/Port)"]
         DB[("state.vscdb (SQLite)")]
     end
@@ -85,14 +84,13 @@ graph TD
     StatusBar -->|Click| PM
     CmdPalette -->|Execute| PM
 
-    PM -->|Mã hóa / Giải mã| SS
-    PM -->|Lưu tab & con trỏ| WS
-    PM -->|Snapshot State| VSCDB
+    PM -->|Lưu trữ mã hóa| SS
+    PM -->|Lưu & Phục hồi tabs| WS
+    PM -->|Snapshot & Swap State| VSCDB
     PM -->|Đồng bộ Quota thời gian thực| LS
 
     VSCDB -->|Đọc / Ghi PRAGMA busy_timeout| DB
-    LS -->|Connect-RPC Smart Dual-Protocol| Server
-    PM -->|Zero-Reload Hot Switch| API
+    LS -->|Connect-RPC Dual-Protocol| Server
 ```
 
 ---
@@ -114,16 +112,16 @@ Nhấn `Ctrl + Shift + P` (hoặc `Cmd + Shift + P`) và gõ `Antigravity Accoun
 - `Antigravity Account: Switch Profile` — Mở danh sách QuickPick chọn nhanh Slot tài khoản.
 - `Antigravity Account: Save Current Session to Profile Slot` — Lưu phiên đăng nhập hiện tại vào Slot mong muốn.
 - `Antigravity Account: Fast Swap Next Account (1 -> 2 -> 3)` — Đổi sang tài khoản kế tiếp có quota.
-- `Antigravity Account: Export Profiles & Tokens Bundle (JSON)` — Xuất gói cấu hình và token ra file JSON an toàn.
+- `Antigravity Account: Export Profiles & Tokens Bundle (JSON)` — Xuất gói cấu hình và token ra file JSON.
 - `Antigravity Account: Import Profiles & Tokens Bundle (JSON)` — Nạp gói cấu hình và token từ file JSON máy khác.
 - `Antigravity Account: Delete Account / Clear Profile Slot` — Xóa tài khoản và giải phóng Slot về trạng thái trống.
-- `Antigravity Account: Backup/Export Profiles to Drive D` — Sao lưu toàn bộ thư mục Profiles ra thư mục `backups/`.
+- `Antigravity Account: Backup/Export Profiles` — Sao lưu toàn bộ thư mục Profiles ra thư mục `backups/`.
 
 ---
 
 ## ⚙️ Cài Đặt & Cấu Hình (Settings)
 
-Extension cung cấp các cài đặt linh hoạt trong `Settings` (`Ctrl + ,` -> gõ `Antigravity Safe Switcher`):
+Extension cung cấp các cài đặt trong `Settings` (`Ctrl + ,` -> gõ `Antigravity Safe Switcher`):
 
 ```json
 {
@@ -143,20 +141,26 @@ Extension cung cấp các cài đặt linh hoạt trong `Settings` (`Ctrl + ,` -
 
 ---
 
-## 🧪 Kiểm Thử Tự Động (Test Suite)
+## 🧪 Kiểm Thử & Quality Gates
 
-Dự án đi kèm bộ kiểm thử tự động toàn diện kiểm tra 15 nhóm tính năng với **53 ca kiểm thử (53/53 PASS)**:
+Dự án thiết lập các cổng kiểm thử tự động, phân tách rõ ràng giữa kiểm thử đơn vị độc lập và kiểm tra tích hợp trực tiếp:
 
 ```bash
-# Chạy bộ test toàn diện
-npm test
-# Hoặc
-node test/live_runner.js
-```
+# Kiểm tra kiểu dữ liệu (TypeScript / JSDoc)
+npm run typecheck
 
-Kết quả kiểm thử:
-- **Suite A (Unit & Logic Cô lập)**: 47/47 PASSED (Zero side effects, mocked secrets, dry run).
-- **Suite B (Live Integration Probes)**: 6/6 PASSED (Kết nối thật Language Server Connect-RPC, SQLite Bridge non-destructive export).
+# Chạy Suite A: Kiểm thử đơn vị cô lập (Deterministic, chạy độc lập, không cần IDE)
+npm test
+
+# Chạy Suite B: Kiểm tra tích hợp trực tiếp (Yêu cầu Antigravity IDE và Language Server đang chạy)
+npm run test:live
+
+# Chạy toàn bộ cả 2 suites
+npm run test:all
+
+# Kiểm tra tính hợp lệ của manifest đóng gói
+npm run check-package
+```
 
 ---
 
@@ -166,19 +170,19 @@ Kết quả kiểm thử:
 
 ```bash
 # Đóng gói với vsce
-npx @vscode/vsce package --no-dependencies
+npm run package
 ```
 
 Sau khi hoàn tất, bạn có thể cài đặt trực tiếp vào Antigravity IDE:
-- Mở Antigravity IDE $\rightarrow$ Vào tab **Extensions** (`Ctrl + Shift + X`) $\rightarrow$ Click vào menu `...` ở góc trên $\rightarrow$ Chọn **Install from VSIX...** $\rightarrow$ Chọn file `antigravity-safe-account-manager-1.2.0.vsix`.
+- Mở Antigravity IDE $\rightarrow$ Vào tab **Extensions** (`Ctrl + Shift + X`) $\rightarrow$ Click vào menu `...` ở góc trên $\rightarrow$ Chọn **Install from VSIX...** $\rightarrow$ Chọn file `.vsix` vừa tạo.
 
 ---
 
-## 🔒 Cam Kết Bảo Mật & Quyền Riêng Tư (Security & Privacy)
+## 🔒 Bảo Mật & Quyền Riêng Tư (Security & Privacy)
 
-- **100% Offline & Local**: Extension hoạt động hoàn toàn cục bộ trên máy tính của bạn. Không thu thập telemetry, không gửi dữ liệu ra bất kỳ máy chủ bên thứ ba nào.
-- **Mã Hóa OS SecretStorage**: Mọi Access Token, Refresh Token đều được bảo vệ bởi lớp mã hóa an toàn của hệ điều hành.
-- **Không Xâm Hại Hệ Thống**: Dữ liệu SQLite được tương tác an toàn qua cơ chế `busy_timeout` và snapshot có sao lưu phòng ngừa sự cố.
+- **Cục bộ & Không gửi dữ liệu ngoài**: Extension hoạt động hoàn toàn cục bộ trên máy tính của bạn. Không thu thập telemetry, không gửi dữ liệu ra bất kỳ máy chủ bên thứ ba nào.
+- **Lưu trữ qua VS Code SecretStorage**: Mọi Access Token, Refresh Token được quản lý qua API SecretStorage của VS Code để hệ điều hành mã hóa.
+- **Tương tác SQLite an toàn**: Dữ liệu SQLite được tương tác với cơ chế `busy_timeout` để tránh gây xung đột khóa tệp khi IDE đang hoạt động.
 
 ---
 
