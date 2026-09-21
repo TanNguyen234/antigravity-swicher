@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Account Center</title>
+  <link rel="stylesheet" href="{{cssUri}}">
+</head>
+<body>
+  <!-- Header -->
+  <header class="dashboard-header">
+    <div class="header-brand">
+      <div class="shield-badge">
+        <span class="badge-pulse"></span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">ANTIGRAVITY ACCOUNTS</div>
+        <div class="brand-subtitle">Multi-Slot Zero-Reload Switcher</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-sm btn-ghost" id="btnOpenTab" title="Mở trong 1 Tab Editor rộng rãi">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+        <span>Mở Tab</span>
+      </button>
+      <button class="btn btn-sm btn-ghost" id="btnRefresh" title="Đồng bộ lại Quota từ Language Server">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+        <span>Làm mới</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Keyboard Shortcut Hint with Keycaps -->
+  <div class="quick-shortcut-banner">
+    <div class="shortcut-icon">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+    </div>
+    <div class="shortcut-content">
+      <span>Xoay nhanh tài khoản kế tiếp:</span>
+      <span class="keycaps-wrap">
+        <kbd class="keycap">Ctrl</kbd>
+        <span class="key-plus">+</span>
+        <kbd class="keycap">Alt</kbd>
+        <span class="key-plus">+</span>
+        <kbd class="keycap">S</kbd>
+      </span>
+    </div>
+  </div>
+
+  <!-- Realtime Stepper Visualizer (Hiển thị khi đang Hot-Switch) -->
+  <div class="switching-stepper-container" id="switchingStepper" style="display: none;">
+    <div class="stepper-header">
+      <div class="stepper-title">
+        <span class="spinner-dot"></span>
+        <span id="stepperHeadline">Đang chuyển đổi tài khoản...</span>
+      </div>
+      <div class="stepper-percent" id="stepperPercent">0%</div>
+    </div>
+    <div class="stepper-track">
+      <div class="stepper-bar" id="stepperProgressBar" style="width: 0%;"></div>
+    </div>
+    <div class="stepper-steps">
+      <div class="step-item" id="step1">
+        <span class="step-dot">1</span>
+        <span class="step-label">Lưu phiên</span>
+      </div>
+      <div class="step-item" id="step2">
+        <span class="step-dot">2</span>
+        <span class="step-label">Nạp Token</span>
+      </div>
+      <div class="step-item" id="step3">
+        <span class="step-dot">3</span>
+        <span class="step-label">Nạp lại IDE & Chat</span>
+      </div>
+      <div class="step-item" id="step4">
+        <span class="step-dot">4</span>
+        <span class="step-label">Hoàn tất</span>
+      </div>
+    </div>
+    <div class="stepper-msg" id="stepperMessage">Đang chuẩn bị...</div>
+  </div>
+
+  <!-- Section: Danh sách Slots -->
+  <div class="section-headline">
+    <div class="headline-left">
+      <span class="headline-title">3 TÀI KHOẢN GOOGLE</span>
+      <span class="slot-count-badge">3 Slots</span>
+    </div>
+    <div class="headline-status" id="activeSlotIndicator">
+      <span class="status-indicator-dot"></span>
+      <span id="activeSlotText">Đang đọc trạng thái...</span>
+    </div>
+  </div>
+
+  <!-- Bento Grid chứa 3 Thẻ Profile -->
+  <div class="accounts-grid" id="accountsGrid">
+    <!-- Render động bởi dashboard.js -->
+  </div>
+
+  <!-- Section: Thống kê & Phân tích Token -->
+  <div class="section-headline">
+    <div class="headline-left">
+      <span class="headline-title">MỨC TIÊU THỤ TOKEN & QUOTA (24H)</span>
+    </div>
+    <div class="headline-status" style="color: var(--text-muted); font-size: 11px;">
+      <span class="status-indicator-dot" style="background: var(--color-brand);"></span>
+      <span>Live RPC Sync</span>
+    </div>
+  </div>
+
+  <div class="chart-container" id="chartContainer">
+    <div class="telemetry-stats-grid">
+      <div class="telemetry-stat-card">
+        <span class="telemetry-stat-label">Tokens 24h</span>
+        <span class="telemetry-stat-val val-brand" id="valTotalTokens">--</span>
+        <span class="telemetry-stat-sub">Tiêu thụ tích lũy</span>
+      </div>
+      <div class="telemetry-stat-card">
+        <span class="telemetry-stat-label">Hồi 5-Giờ</span>
+        <span class="telemetry-stat-val val-success" id="valFiveHourQuota">--</span>
+        <span class="telemetry-stat-sub" id="valFiveHourReset">Rolling limit</span>
+      </div>
+      <div class="telemetry-stat-card">
+        <span class="telemetry-stat-label">Hạn mức Tuần</span>
+        <span class="telemetry-stat-val val-warning" id="valWeeklyQuota">--</span>
+        <span class="telemetry-stat-sub" id="valWeeklyReset">Weekly quota</span>
+      </div>
+      <div class="telemetry-stat-card">
+        <span class="telemetry-stat-label">Tiết kiệm API</span>
+        <span class="telemetry-stat-val val-purple" id="valSavings">$0.00</span>
+        <span class="telemetry-stat-sub">So với direct API</span>
+      </div>
+    </div>
+
+    <div class="chart-wrapper">
+      <svg class="chart-svg" id="tokenChart" viewBox="0 0 300 95" preserveAspectRatio="none"></svg>
+      <div class="chart-tooltip" id="chartTooltip" style="display: none;"></div>
+    </div>
+
+    <div class="chart-legend">
+      <div class="legend-item"><span class="legend-dot dot-tokens"></span><span>Tokens tiêu thụ (24h)</span></div>
+      <div class="legend-item"><span class="legend-dot dot-5h"></span><span>Rolling 5h Quota</span></div>
+      <div class="legend-item"><span class="legend-dot dot-weekly"></span><span>Weekly Quota</span></div>
+    </div>
+  </div>
+
+  <!-- Section: Thao tác Hệ thống & Sao lưu -->
+  <div class="section-headline">
+    <div class="headline-left">
+      <span class="headline-title">THAO TÁC HỆ THỐNG & SAO LƯU</span>
+    </div>
+  </div>
+
+  <div class="system-actions-grid">
+    <button class="btn btn-primary btn-action" id="btnSaveCurrent" title="Gán phiên tài khoản Google hiện tại vào Slot đang kích hoạt">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+      <span>Lưu vào Slot Active</span>
+    </button>
+    <button class="btn btn-secondary btn-action" id="btnBackup" title="Sao lưu toàn bộ profiles và cấu hình ra thư mục an toàn">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>
+      <span>Backup Profiles</span>
+    </button>
+    <button class="btn btn-warning btn-action" id="btnLogoutCurrent" title="Đăng xuất tài khoản hiện tại khỏi IDE">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+      <span>Đăng xuất phiên</span>
+    </button>
+    <button class="btn btn-danger-outline btn-action" id="btnSimulateLow" title="Kích hoạt kiểm thử tính năng Auto-Switch khi Quota chạm ngưỡng cạn">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+      <span>Test Auto-Switch (Quota 8%)</span>
+    </button>
+  </div>
+
+  <script src="{{jsUri}}"></script>
+</body>
+</html>

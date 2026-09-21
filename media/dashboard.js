@@ -1,0 +1,532 @@
+(function () {
+  const vscode = acquireVsCodeApi();
+
+  const accountsGrid = document.getElementById('accountsGrid');
+  const activeSlotIndicator = document.getElementById('activeSlotIndicator');
+  const activeSlotText = document.getElementById('activeSlotText');
+  const valTotalTokens = document.getElementById('valTotalTokens');
+  const valFiveHourQuota = document.getElementById('valFiveHourQuota');
+  const valFiveHourReset = document.getElementById('valFiveHourReset');
+  const valWeeklyQuota = document.getElementById('valWeeklyQuota');
+  const valWeeklyReset = document.getElementById('valWeeklyReset');
+  const valSavings = document.getElementById('valSavings');
+  const tokenChart = document.getElementById('tokenChart');
+  const chartTooltip = document.getElementById('chartTooltip');
+
+  // Stepper Elements
+  const switchingStepper = document.getElementById('switchingStepper');
+  const stepperProgressBar = document.getElementById('stepperProgressBar');
+  const stepperHeadline = document.getElementById('stepperHeadline');
+  const stepperPercent = document.getElementById('stepperPercent');
+  const stepperMessage = document.getElementById('stepperMessage');
+  const stepItems = [
+    document.getElementById('step1'),
+    document.getElementById('step2'),
+    document.getElementById('step3'),
+    document.getElementById('step4')
+  ];
+
+  // Header & System Action Buttons
+  document.getElementById('btnRefresh').addEventListener('click', () => {
+    vscode.postMessage({ command: 'refresh' });
+  });
+
+  document.getElementById('btnOpenTab').addEventListener('click', () => {
+    vscode.postMessage({ command: 'openTab' });
+  });
+
+  document.getElementById('btnSaveCurrent').addEventListener('click', () => {
+    vscode.postMessage({ command: 'saveCurrent' });
+  });
+
+  document.getElementById('btnLogoutCurrent').addEventListener('click', () => {
+    vscode.postMessage({ command: 'logoutCurrent' });
+  });
+
+  document.getElementById('btnBackup').addEventListener('click', () => {
+    vscode.postMessage({ command: 'backup' });
+  });
+
+  document.getElementById('btnSimulateLow').addEventListener('click', () => {
+    vscode.postMessage({ command: 'simulateLow' });
+  });
+
+  let switchingSlot = null;
+  let switchingProgressMsg = '';
+  let liveCountdownInterval = null;
+  let cachedHourlyUsage = [];
+
+  // Visibility Optimization: Dừng interval khi tab/panel bị ẩn để tiết kiệm 100% CPU
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (liveCountdownInterval) {
+        clearInterval(liveCountdownInterval);
+        liveCountdownInterval = null;
+      }
+    } else {
+      startLiveCountdown();
+    }
+  });
+
+  // Lắng nghe dữ liệu từ extension host
+  window.addEventListener('message', event => {
+    const message = event.data;
+    if (message && message.type === 'updateData') {
+      if (switchingSlot !== null) {
+        completeSwitchingStepper();
+      }
+      switchingSlot = null;
+      switchingProgressMsg = '';
+      renderDashboard(message.data);
+    } else if (message && message.type === 'switchingProgress') {
+      switchingSlot = message.slot;
+      switchingProgressMsg = message.message || 'Đang xử lý...';
+      updateSwitchingStepper(message.slot, message.step || 0, switchingProgressMsg);
+    }
+  });
+
+  function updateSwitchingStepper(slot, step, message) {
+    if (!switchingStepper) return;
+    switchingStepper.style.display = 'block';
+
+    if (stepperHeadline) {
+      stepperHeadline.textContent = `Đang chuyển đổi sang Slot ${slot}...`;
+    }
+    if (stepperMessage) {
+      stepperMessage.textContent = message;
+    }
+
+    let percent = 15;
+    if (step === 1) percent = 25;
+    else if (step === 2) percent = 50;
+    else if (step === 3) percent = 75;
+    else if (step >= 4) percent = 92;
+
+    if (stepperProgressBar) {
+      stepperProgressBar.style.width = percent + '%';
+    }
+    if (stepperPercent) {
+      stepperPercent.textContent = percent + '%';
+    }
+
+    stepItems.forEach((el, idx) => {
+      if (!el) return;
+      el.classList.remove('is-active', 'is-done');
+      if (idx + 1 < step) {
+        el.classList.add('is-done');
+      } else if (idx + 1 === step) {
+        el.classList.add('is-active');
+      }
+    });
+
+    if (activeSlotText) {
+      activeSlotText.textContent = `Đang chuyển sang Slot ${slot}...`;
+    }
+  }
+
+  function completeSwitchingStepper() {
+    if (!switchingStepper) return;
+    if (stepperProgressBar) stepperProgressBar.style.width = '100%';
+    if (stepperPercent) stepperPercent.textContent = '100%';
+    if (stepperMessage) stepperMessage.textContent = 'Hoàn tất chuyển đổi!';
+    stepItems.forEach(el => el && el.classList.add('is-done'));
+
+    setTimeout(() => {
+      switchingStepper.style.display = 'none';
+    }, 1400);
+  }
+
+  function getBarClass(val) {
+    if (val > 40) return 'fill-emerald';
+    if (val > 15) return 'fill-amber';
+    return 'fill-rose';
+  }
+
+  function formatCompactTokens(num) {
+    if (num === undefined || num === null) return '0';
+    if (num >= 1000000) {
+      return (num / 1000000).toFixed(2) + 'M';
+    }
+    if (num >= 1000) {
+      return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toString();
+  }
+
+  function formatTimeRemaining(resetTimeStr) {
+    if (!resetTimeStr) return 'Đầy quota';
+    const diff = new Date(resetTimeStr).getTime() - Date.now();
+    if (diff <= 0) return 'Đầy quota';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+    if (hours > 24) {
+      const days = Math.floor(hours / 24);
+      return `${days}d ${hours % 24}h`;
+    }
+    return `${hours}h ${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+  }
+
+  function startLiveCountdown() {
+    if (liveCountdownInterval) clearInterval(liveCountdownInterval);
+    liveCountdownInterval = setInterval(() => {
+      if (document.hidden) return; // double check visibility
+
+      document.querySelectorAll('[data-reset-time]').forEach(el => {
+        const timeStr = el.getAttribute('data-reset-time');
+        if (!timeStr) return;
+        const diff = new Date(timeStr).getTime() - Date.now();
+        if (diff <= 0) {
+          el.textContent = 'Đầy quota';
+          el.style.color = 'var(--color-success)';
+        } else {
+          const hours = Math.floor(diff / (1000 * 60 * 60));
+          const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+          const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+          if (hours > 24) {
+            const days = Math.floor(hours / 24);
+            el.textContent = `${days}d ${hours % 24}h`;
+          } else {
+            el.textContent = `${hours}h ${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+          }
+        }
+      });
+    }, 1000);
+  }
+
+  function setupChartInteraction() {
+    if (!tokenChart || !chartTooltip) return;
+    const chartWrapper = tokenChart.parentElement;
+    if (!chartWrapper) return;
+
+    chartWrapper.addEventListener('mousemove', (e) => {
+      if (!cachedHourlyUsage || cachedHourlyUsage.length === 0) return;
+      const rect = tokenChart.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const normX = Math.max(0, Math.min(1, mouseX / rect.width));
+      const idx = Math.round(normX * (cachedHourlyUsage.length - 1));
+      const item = cachedHourlyUsage[idx];
+      if (!item) return;
+
+      const width = 300;
+      const padding = 14;
+      const stepX = (width - padding * 2) / (cachedHourlyUsage.length - 1);
+      const pointX = padding + idx * stepX;
+
+      const crosshair = document.getElementById('chartCrosshair');
+      if (crosshair) {
+        crosshair.setAttribute('x1', pointX);
+        crosshair.setAttribute('x2', pointX);
+        crosshair.style.display = 'block';
+      }
+
+      const tokenStr = formatCompactTokens(item.tokens);
+      chartTooltip.style.display = 'block';
+      chartTooltip.innerHTML = `
+        <div style="font-weight: 700; color: var(--color-brand); margin-bottom: 2px;">Giờ ${item.hour}:00</div>
+        <div>Tokens: <span style="font-weight: 600; color: #f0f6fc;">${tokenStr}</span></div>
+        <div>Quota còn: <span style="font-weight: 600; color: var(--color-success);">${item.quota || 100}%</span></div>
+      `;
+
+      const leftPx = (pointX / width) * rect.width;
+      chartTooltip.style.left = `${leftPx}px`;
+      chartTooltip.style.top = `15px`;
+    });
+
+    chartWrapper.addEventListener('mouseleave', () => {
+      if (chartTooltip) chartTooltip.style.display = 'none';
+      const crosshair = document.getElementById('chartCrosshair');
+      if (crosshair) crosshair.style.display = 'none';
+    });
+  }
+
+  function renderChart(hourlyUsage) {
+    if (!tokenChart || !hourlyUsage || hourlyUsage.length === 0) return;
+    cachedHourlyUsage = hourlyUsage;
+
+    const width = 300;
+    const height = 95;
+    const padding = 14;
+
+    const maxTokens = Math.max(...hourlyUsage.map(d => d.tokens), 50000);
+    const stepX = (width - padding * 2) / (hourlyUsage.length - 1);
+
+    const points = hourlyUsage.map((d, idx) => {
+      const x = padding + idx * stepX;
+      const y = height - padding - (d.tokens / maxTokens) * (height - padding * 2);
+      return { x, y, hour: d.hour, tokens: d.tokens, quota: d.quota };
+    });
+
+    const dPath = points.reduce((acc, p, idx) => {
+      return idx === 0 ? `M ${p.x} ${p.y}` : `${acc} L ${p.x} ${p.y}`;
+    }, '');
+
+    const areaPath = `${dPath} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
+
+    let svgHtml = `
+      <defs>
+        <linearGradient id="gradArea" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#388bfd" stop-opacity="0.32"/>
+          <stop offset="100%" stop-color="#388bfd" stop-opacity="0.01"/>
+        </linearGradient>
+      </defs>
+      <line id="chartCrosshair" class="chart-crosshair" y1="5" y2="${height - padding}" x1="0" x2="0" style="display: none;" />
+      <path d="${areaPath}" fill="url(#gradArea)" />
+      <path d="${dPath}" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+    `;
+
+    // Render axis time labels & subtle hover dots
+    points.forEach((p, idx) => {
+      if (idx % 4 === 0 || idx === points.length - 1) {
+        svgHtml += `
+          <circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#58a6ff" class="chart-dot" />
+          <text x="${p.x}" y="${height - 2}" font-size="7.5" fill="#8b949e" text-anchor="middle" font-family="ui-monospace, monospace">${p.hour}h</text>
+        `;
+      }
+    });
+
+    tokenChart.innerHTML = svgHtml;
+  }
+
+  function renderDashboard(data) {
+    if (!data || !Array.isArray(data.profiles)) return;
+
+    const activeProfile = data.profiles.find(p => p.slot === data.activeSlot) || data.profiles[0];
+
+    if (activeSlotText) {
+      activeSlotText.textContent = `Slot ${data.activeSlot} Đang hoạt động`;
+    }
+
+    // Top 4-Metric Telemetry Stat Bar
+    if (valTotalTokens && data.totalTokensToday !== undefined) {
+      valTotalTokens.textContent = formatCompactTokens(data.totalTokensToday);
+    }
+    if (valFiveHourQuota) {
+      const q5h = activeProfile ? (activeProfile.fiveHourQuota ?? activeProfile.flashQuota ?? 100) : 100;
+      valFiveHourQuota.textContent = q5h + '%';
+    }
+    if (valFiveHourReset) {
+      if (activeProfile && activeProfile.fiveHourResetTime) {
+        valFiveHourReset.textContent = 'Hồi sau ' + formatTimeRemaining(activeProfile.fiveHourResetTime);
+      } else {
+        valFiveHourReset.textContent = 'Đầy hạn mức 5h';
+      }
+    }
+    if (valWeeklyQuota) {
+      const qWk = activeProfile ? (activeProfile.weeklyQuota ?? activeProfile.proQuota ?? 100) : 100;
+      valWeeklyQuota.textContent = qWk + '%';
+    }
+    if (valWeeklyReset) {
+      if (activeProfile && activeProfile.weeklyResetTime) {
+        valWeeklyReset.textContent = 'Hồi sau ' + formatTimeRemaining(activeProfile.weeklyResetTime);
+      } else {
+        valWeeklyReset.textContent = 'Đầy hạn mức tuần';
+      }
+    }
+    if (valSavings && data.estimatedSavingsUSD !== undefined) {
+      valSavings.textContent = '$' + data.estimatedSavingsUSD.toFixed(2);
+    }
+
+    // Render Telemetry Chart
+    if (data.hourlyUsage) {
+      renderChart(data.hourlyUsage);
+    }
+
+    // Render Account Profile Cards
+    accountsGrid.innerHTML = '';
+    data.profiles.forEach(p => {
+      const isCurrent = (p.slot === data.activeSlot);
+      const isConfigured = Boolean(p.savedAt && p.email);
+      const card = document.createElement('div');
+
+      if (!isConfigured) {
+        // Render thẻ SLOT TRỐNG
+        card.className = 'account-card is-empty';
+        card.innerHTML = `
+          <div>
+            <div class="card-top">
+              <span class="slot-tag">SLOT #${p.slot}</span>
+              <span class="status-pill status-empty">Trống</span>
+            </div>
+
+            <div class="account-name-row">
+              <div class="account-name" style="color: var(--text-muted);">[#${p.slot}] Slot Trống</div>
+            </div>
+
+            <div class="empty-slot-placeholder">
+              <div class="empty-icon">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+              </div>
+              <div class="empty-text-title">Chưa liên kết tài khoản</div>
+              <div class="empty-text-desc">Đăng nhập tài khoản Google để luân phiên Quota tự động khi cạn dung lượng.</div>
+            </div>
+          </div>
+
+          <div class="card-actions-bar">
+            <button class="btn btn-sm btn-primary" data-action="login" data-slot="${p.slot}" style="flex: 1;" title="Đăng nhập tài khoản Google mới vào Slot này">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg>
+              Đăng nhập mới
+            </button>
+            <button class="btn btn-sm btn-secondary" data-action="save" data-slot="${p.slot}" title="Gán tài khoản đang dùng hiện tại vào Slot này">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path></svg>
+              Gán phiên này
+            </button>
+            <button class="btn btn-sm btn-ghost" data-action="delete" data-slot="${p.slot}" title="Làm sạch dữ liệu Slot này">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            </button>
+          </div>
+        `;
+      } else {
+        // Render thẻ ĐÃ CÓ TÀI KHOẢN
+        card.className = `account-card ${isCurrent ? 'is-active' : ''}`;
+        const isExpiring = p.tokenExpiry && p.tokenExpiry.isExpiring;
+
+        const q5h = p.fiveHourQuota ?? p.flashQuota ?? 100;
+        const q5hReset = p.fiveHourResetTime ?? p.resetTime;
+        const qWk = p.weeklyQuota ?? p.proQuota ?? 100;
+        const qWkReset = p.weeklyResetTime;
+        const qClaude = p.claudeQuota ?? 100;
+        const planDisplay = p.planName ? `${p.planName}` : (p.tier || 'Google AI');
+
+        card.innerHTML = `
+          <div>
+            <div class="card-top">
+              <span class="slot-tag">SLOT #${p.slot}</span>
+              ${isCurrent 
+                ? '<span class="status-pill status-active">Đang dùng</span>' 
+                : '<span class="status-pill status-standby">Sẵn sàng</span>'
+              }
+            </div>
+
+            <div class="account-name-row">
+              <div class="account-name" title="${p.name}">[#${p.slot}] ${p.name}</div>
+              <button class="btn-icon-rename" data-action="rename" data-slot="${p.slot}" title="Đổi tên gợi nhớ cho Slot ${p.slot}">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+              </button>
+            </div>
+
+            <div class="account-email-row">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+              <span class="account-email-text">${p.email}</span>
+            </div>
+
+            <div class="meta-badges-row">
+              <span class="tier-badge">${planDisplay}</span>
+              ${p.promptCredits !== undefined ? `<span class="credits-badge" title="Prompt Credits còn lại">⚡ ${p.promptCredits} Credits</span>` : ''}
+              ${isExpiring ? '<span style="color: #f85149; font-size: 9.5px;" title="Token sắp hết hạn">⚠️ Token sắp hết hạn</span>' : ''}
+            </div>
+
+            <div class="quota-bars-container">
+              <!-- Bucket 1: 5-Hour Rolling Limit (Gemini 2.5 / Flash) -->
+              <div class="quota-item">
+                <div class="quota-item-header">
+                  <span class="quota-item-title">Gemini 2.5 Flash (5-Giờ)</span>
+                  <span class="quota-val-text" style="color: ${q5h <= 15 ? 'var(--color-danger)' : 'inherit'};">${q5h}%</span>
+                </div>
+                <div class="quota-track">
+                  <div class="quota-fill ${getBarClass(q5h)}" style="width: ${q5h}%;"></div>
+                </div>
+                <div class="quota-sub-meta">
+                  <span>Hạn mức 5h cuốn chiếu</span>
+                  <span data-reset-time="${q5hReset || ''}">${formatTimeRemaining(q5hReset)}</span>
+                </div>
+              </div>
+
+              <!-- Bucket 2: Weekly Allocation (Gemini Pro) -->
+              <div class="quota-item">
+                <div class="quota-item-header">
+                  <span class="quota-item-title">Gemini Pro (Hạn mức Tuần)</span>
+                  <span class="quota-val-text" style="color: ${qWk <= 15 ? 'var(--color-danger)' : 'inherit'};">${qWk}%</span>
+                </div>
+                <div class="quota-track">
+                  <div class="quota-fill ${getBarClass(qWk)}" style="width: ${qWk}%;"></div>
+                </div>
+                <div class="quota-sub-meta">
+                  <span>Hạn mức Tuần cố định</span>
+                  <span data-reset-time="${qWkReset || ''}">${formatTimeRemaining(qWkReset)}</span>
+                </div>
+              </div>
+
+              <!-- Bucket 3: Claude & GPT 3P Models -->
+              <div class="quota-item">
+                <div class="quota-item-header">
+                  <span class="quota-item-title">Claude 3.7 & GPT (3P)</span>
+                  <span class="quota-val-text" style="color: ${qClaude <= 15 ? 'var(--color-danger)' : 'inherit'};">${qClaude}%</span>
+                </div>
+                <div class="quota-track">
+                  <div class="quota-fill ${getBarClass(qClaude)}" style="width: ${qClaude}%;"></div>
+                </div>
+                <div class="quota-sub-meta">
+                  <span>Mô hình đối tác</span>
+                  <span>Đồng bộ theo phiên</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card-actions-bar">
+            ${isCurrent
+              ? `
+                <button class="btn btn-sm btn-disabled" disabled style="flex: 1;">✓ Đang hoạt động</button>
+                <button class="btn btn-sm btn-warning" data-action="logout" data-slot="${p.slot}" title="Đăng xuất phiên hiện tại">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                </button>
+                <button class="btn btn-sm btn-danger-outline" data-action="delete" data-slot="${p.slot}" title="Xóa tài khoản khỏi Slot">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+              `
+              : `
+                <button class="btn btn-sm btn-primary" data-action="switch" data-slot="${p.slot}" style="flex: 1;" title="Chuyển ngay sang tài khoản này (Bảo toàn Tab code & Khung Chat)">
+                  ⚡ Chuyển ngay
+                </button>
+                <button class="btn btn-sm btn-danger-outline" data-action="delete" data-slot="${p.slot}" title="Xóa tài khoản khỏi Slot">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+              `
+            }
+          </div>
+        `;
+      }
+
+      accountsGrid.appendChild(card);
+    });
+
+    startLiveCountdown();
+
+    // Event Delegation: click trên bất kỳ nút nào trong accountsGrid
+    accountsGrid.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const action = btn.getAttribute('data-action');
+        const slot = parseInt(btn.getAttribute('data-slot'), 10);
+
+        if (action === 'rename') {
+          vscode.postMessage({ command: 'renameSlot', slot: slot });
+        } else if (action === 'login') {
+          btn.innerHTML = `<span class="spinner-dot"></span> Chờ đăng nhập...`;
+          btn.classList.add('btn-disabled');
+          vscode.postMessage({ command: 'loginNew', slot: slot });
+        } else if (action === 'switch') {
+          switchingSlot = slot;
+          updateSwitchingStepper(slot, 1, 'Đang lưu tab code & chuẩn bị chuyển tài khoản...');
+          vscode.postMessage({ command: 'switch', slot: slot });
+        } else if (action === 'save') {
+          vscode.postMessage({ command: 'bindSlot', slot: slot });
+        } else if (action === 'logout') {
+          vscode.postMessage({ command: 'logoutCurrent' });
+        } else if (action === 'delete') {
+          vscode.postMessage({ command: 'deleteSlot', slot: slot });
+        }
+      });
+    });
+  }
+
+  // Setup interactive chart crosshair and tooltips
+  setupChartInteraction();
+
+  // Khởi động gửi yêu cầu lấy dữ liệu lần đầu
+  vscode.postMessage({ command: 'refresh' });
+})();
